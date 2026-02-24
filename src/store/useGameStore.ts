@@ -69,6 +69,18 @@ interface GameStore {
   endDuelDraw: () => void
 }
 
+
+// Normalize questions loaded from Supabase — ensures synonyms is always string[]
+function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })[] {
+  return cats.map(cat => ({
+    ...cat,
+    questions: (cat.questions ?? []).map((q: any) => ({
+      ...q,
+      synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
+    })),
+  }))
+}
+
 export const useGameStore = create<GameStore>((set, get) => ({
   categories: [],
   tiles: [],
@@ -81,8 +93,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   loadCategories: async () => {
     const { data: cats } = await supabase
-      .from('categories').select('*, questions(*)').order('created_at')
-    const full = (cats ?? []) as (Category & { questions: Question[] })[]
+      .from('categories').select('*, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at')
+    const full = normalizeQuestions(cats ?? [])
     set({ categories: full })
 
     const cfg = useConfigStore.getState().config
@@ -97,10 +109,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     // Load fresh categories & config from Supabase
     const [{ data: cats }] = await Promise.all([
-      supabase.from('categories').select('*, questions(*)').order('created_at'),
+      supabase.from('categories').select('*, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at'),
       useConfigStore.getState().fetch(),
     ])
-    const categories = (cats ?? []) as (Category & { questions: Question[] })[]
+    const categories = normalizeQuestions(cats ?? [])
     set({ categories })
 
     // Restore board state (tile owners preserved from save)

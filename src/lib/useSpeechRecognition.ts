@@ -1,53 +1,30 @@
 /**
- * useSpeechRecognition
+ * useSpeechRecognition — Web Speech API hook
  *
- * Nasłuchuje głosu gracza i zwraca wykryty tekst przez callback.
- * Używa Web Speech API (Chrome/Edge) — bez zewnętrznych usług, bez klucza API.
- *
- * Obsługuje:
- *  - język polski (pl-PL)
- *  - ciągłe nasłuchiwanie (interim + final results)
- *  - automatyczny restart po zakończeniu sesji (przeglądarka zatrzymuje po ~60s ciszy)
- *  - bezpieczne zatrzymanie i czyszczenie
+ * Architektura:
+ * - onInterim: odpala z debouncingiem 200ms, strict matching (word-boundary only)
+ * - onFinal:   odpala natychmiast dla wszystkich 3 alternatyw, fuzzy matching
+ * - Callbacks w refs — nigdy stale closure
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
-// Typ dla Web Speech API (nie w standardowych TypeScript typach)
 type SpeechRecognitionInstance = {
-  lang: string
-  continuous: boolean
-  interimResults: boolean
-  maxAlternatives: number
-  start: () => void
-  stop: () => void
-  abort: () => void
+  lang: string; continuous: boolean; interimResults: boolean; maxAlternatives: number
+  start: () => void; stop: () => void; abort: () => void
   onresult: ((e: SpeechRecognitionEvent) => void) | null
-  onerror: ((e: SpeechRecognitionErrorEvent) => void) | null
-  onend: (() => void) | null
-  onstart: (() => void) | null
+  onerror:  ((e: SpeechRecognitionErrorEvent) => void) | null
+  onend: (() => void) | null; onstart: (() => void) | null
 }
-
 type SpeechRecognitionEvent = {
   resultIndex: number
-  results: {
-    [index: number]: {
-      isFinal: boolean
-      [index: number]: { transcript: string; confidence: number }
-    }
-    length: number
-  }
+  results: { [i: number]: { isFinal: boolean; length: number; [alt: number]: { transcript: string } }; length: number }
 }
-
 type SpeechRecognitionErrorEvent = { error: string; message: string }
 
 function getSpeechRecognition(): (new () => SpeechRecognitionInstance) | null {
   if (typeof window === 'undefined') return null
-  return (
-    (window as any).SpeechRecognition ||
-    (window as any).webkitSpeechRecognition ||
-    null
-  )
+  return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null
 }
 
 export function isSpeechRecognitionSupported(): boolean {
@@ -55,37 +32,32 @@ export function isSpeechRecognitionSupported(): boolean {
 }
 
 interface UseSpeechRecognitionOptions {
-  /** Callback wywoływany gdy zostanie rozpoznane słowo/zdanie (final result) */
-  onResult: (transcript: string) => void
-  /** Callback wywoływany gdy trwa rozpoznawanie (interim — podgląd w locie) */
-  onInterim?: (transcript: string) => void
-  /** Czy nasłuchiwanie jest aktywne */
+  onFinal:   (transcript: string) => void
+  onInterim: (transcript: string) => void
   active: boolean
-  /** Język rozpoznawania (domyślnie pl-PL) */
   lang?: string
 }
 
-export function useSpeechRecognition({
-  onResult,
-  onInterim,
-  active,
-  lang = 'pl-PL',
-}: UseSpeechRecognitionOptions) {
-  const recognitionRef = useRef<SpeechRecognitionInstance | null>(null)
-  const activeRef = useRef(active)
-  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+export function useSpeechRecognition({ onFinal, onInterim, active, lang = 'pl-PL' }: UseSpeechRecognitionOptions) {
+  const recognitionRef     = useRef<SpeechRecognitionInstance | null>(null)
+  const activeRef          = useRef(active)
+  const restartTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const interimDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const onFinalRef         = useRef(onFinal)
+  const onInterimRef       = useRef(onInterim)
   const [listening, setListening] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError]         = useState<string | null>(null)
 
-  activeRef.current = active
+  // Keep callbacks always fresh
+  activeRef.current    = active
+  onFinalRef.current   = onFinal
+  onInterimRef.current = onInterim
 
   const stop = useCallback(() => {
-    if (restartTimerRef.current) {
-      clearTimeout(restartTimerRef.current)
-      restartTimerRef.current = null
-    }
+    if (restartTimerRef.current)    { clearTimeout(restartTimerRef.current);    restartTimerRef.current = null }
+    if (interimDebounceRef.current) { clearTimeout(interimDebounceRef.current); interimDebounceRef.current = null }
     if (recognitionRef.current) {
-      recognitionRef.current.onend = null  // prevent auto-restart
+      recognitionRef.current.onend = null
       recognitionRef.current.abort()
       recognitionRef.current = null
     }
@@ -94,186 +66,163 @@ export function useSpeechRecognition({
 
   const start = useCallback(() => {
     const SR = getSpeechRecognition()
-    if (!SR) {
-      setError('Twoja przeglądarka nie obsługuje rozpoznawania mowy. Użyj Chrome lub Edge.')
-      return
-    }
+    if (!SR) { setError('Twoja przeglądarka nie obsługuje rozpoznawania mowy. Użyj Chrome lub Edge.'); return }
+    if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort() }
 
-    // Cleanup previous instance
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null
-      recognitionRef.current.abort()
-    }
+    const rec = new SR()
+    rec.lang            = lang
+    rec.continuous      = true
+    rec.interimResults  = true
+    rec.maxAlternatives = 3
 
-    const recognition = new SR()
-    recognition.lang = lang
-    recognition.continuous = true
-    recognition.interimResults = true
-    recognition.maxAlternatives = 3
+    rec.onstart = () => { setListening(true); setError(null) }
 
-    recognition.onstart = () => {
-      setListening(true)
-      setError(null)
-    }
-
-    recognition.onresult = (e: SpeechRecognitionEvent) => {
-      let finalTranscript = ''
-      let interimTranscript = ''
-
+    rec.onresult = (e: SpeechRecognitionEvent) => {
       for (let i = e.resultIndex; i < e.results.length; i++) {
-        const transcript = e.results[i][0].transcript
-        if (e.results[i].isFinal) {
-          finalTranscript += transcript
+        const result = e.results[i]
+        if (result.isFinal) {
+          // Cancel pending interim — final supersedes it
+          if (interimDebounceRef.current) { clearTimeout(interimDebounceRef.current); interimDebounceRef.current = null }
+          // Send all alternatives (Chrome gives up to 3 — helps with synonym matching)
+          const alts = Math.min(result.length ?? 1, 3)
+          for (let alt = 0; alt < alts; alt++) {
+            const t = result[alt]?.transcript?.trim()
+            if (t) onFinalRef.current(t)
+          }
         } else {
-          interimTranscript += transcript
+          // Debounce interim by 200ms — avoids firing on every character
+          const t = result[0]?.transcript?.trim()
+          if (t) {
+            if (interimDebounceRef.current) clearTimeout(interimDebounceRef.current)
+            interimDebounceRef.current = setTimeout(() => {
+              interimDebounceRef.current = null
+              onInterimRef.current(t)
+            }, 200)
+          }
         }
       }
-
-      // Fire on interim immediately for fast response — caller decides if it matches
-      if (interimTranscript.trim()) {
-        onResult(interimTranscript.trim())
-        if (onInterim) onInterim(interimTranscript.trim())
-      }
-
-      // Also fire on final (may differ from interim)
-      if (finalTranscript.trim()) {
-        onResult(finalTranscript.trim())
-      }
     }
 
-    recognition.onerror = (e: SpeechRecognitionErrorEvent) => {
-      // 'no-speech' i 'aborted' są normalne — nie pokazuj jako błąd
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
       if (e.error === 'no-speech' || e.error === 'aborted') return
-      if (e.error === 'not-allowed') {
-        setError('Brak dostępu do mikrofonu. Zezwól na dostęp w ustawieniach przeglądarki.')
-        return
-      }
-      if (e.error === 'network') {
-        setError('Błąd sieci. Rozpoznawanie mowy wymaga połączenia z internetem.')
-        return
-      }
-      console.warn('[Speech] error:', e.error, e.message)
+      if (e.error === 'not-allowed') { setError('Brak dostępu do mikrofonu. Zezwól na dostęp w ustawieniach przeglądarki.'); return }
+      if (e.error === 'network')     { setError('Błąd sieci — rozpoznawanie wymaga połączenia z internetem.'); return }
     }
 
-    recognition.onend = () => {
+    rec.onend = () => {
       setListening(false)
-      // Auto-restart if still active (przeglądarka zatrzymuje po ~60s ciszy)
       if (activeRef.current) {
-        restartTimerRef.current = setTimeout(() => {
-          if (activeRef.current) start()
-        }, 300)
+        restartTimerRef.current = setTimeout(() => { if (activeRef.current) start() }, 300)
       }
     }
 
-    recognitionRef.current = recognition
+    recognitionRef.current = rec
+    try { rec.start() } catch { /* ignore */ }
+  }, [lang])
 
-    try {
-      recognition.start()
-    } catch (e) {
-      console.warn('[Speech] Failed to start:', e)
-    }
-  }, [lang, onResult, onInterim])
-
-  // Start/stop based on active prop
   useEffect(() => {
-    if (active) {
-      start()
-    } else {
-      stop()
-    }
+    if (active) { start() } else { stop() }
     return () => stop()
   }, [active])
 
   return { listening, error }
 }
 
-// ── Normalizacja tekstu do porównania ────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Text normalization
+// ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Normalizuje tekst: małe litery, usuwa interpunkcję, normalizuje spacje,
- * zamienia polskie znaki diakrytyczne na ASCII.
- */
 export function normalizeText(text: string): string {
   return text
     .toLowerCase()
     .normalize('NFD')
-    // Usuń znaki diakrytyczne (ą→a, ę→e, ó→o itd.)
-    .replace(/[\u0300-\u036f]/g, '')
-    // Usuń interpunkcję
+    .replace(/[\u0300-\u036f]/g, '')  // ą→a, ę→e, ó→o etc.
     .replace(/[^a-z0-9\s]/g, '')
-    // Normalizuj spacje
     .replace(/\s+/g, ' ')
     .trim()
 }
 
-/**
- * Sprawdza czy mówiony tekst zawiera poprawną odpowiedź.
- * Toleruje różnice diakrytyczne i dopasowuje częściowo.
- *
- * Przykłady:
- *   spoken: "to jest wodospad"  answer: "wodospad"  → true
- *   spoken: "wodospad"           answer: "wodospad"  → true
- *   spoken: "wodospady"          answer: "wodospad"  → true (stem match)
- */
-/** Single-phrase match logic */
-function matchesPhrase(nSpoken: string, nPhrase: string): boolean {
+// ─────────────────────────────────────────────────────────────────────────────
+// Word-boundary match
+// Prevents "las" from matching inside "klasyczny" via containment check
+// ─────────────────────────────────────────────────────────────────────────────
+
+function containsWholePhrase(spokenNorm: string, phraseNorm: string): boolean {
+  if (spokenNorm === phraseNorm) return true
+  const escaped = phraseNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(spokenNorm)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phrase matching
+// strict=true  → word-boundary only (safe for interim/partial text)
+// strict=false → + stem matching and word-level fuzzy (for final/inflections)
+// ─────────────────────────────────────────────────────────────────────────────
+
+function matchesPhrase(nSpoken: string, nPhrase: string, strict: boolean): boolean {
   if (!nSpoken || !nPhrase) return false
 
-  // Exact match
-  if (nSpoken === nPhrase) return true
+  // Word-boundary match (both modes)
+  if (containsWholePhrase(nSpoken, nPhrase)) return true
 
-  // Phrase contained in spoken (np. "to jest wodospad karkonoski")
-  if (nSpoken.includes(nPhrase)) return true
+  if (strict) return false
 
-  // Spoken contained in phrase (np. odpowiedź "złoty baran", powiedziano "baran")
-  if (nPhrase.includes(nSpoken) && nSpoken.length >= 3) return true
+  // ── Final-only fuzzy matching ──────────────────────────────────────────
 
-  // Stem match — pierwsze 75% liter (np. wodospad/wodospady)
-  if (nPhrase.length >= 5 && nSpoken.length >= 5) {
-    const stemLen = Math.min(Math.ceil(nPhrase.length * 0.75), nPhrase.length - 1)
-    if (nPhrase.slice(0, stemLen) === nSpoken.slice(0, stemLen)) return true
+  // Stem match: "wodospad" ↔ "wodospady", "niedźwiedź" ↔ "niedźwiedzia"
+  // Only for words >= 6 chars to avoid short-word false positives
+  if (nPhrase.length >= 6 && nSpoken.length >= 5) {
+    const stemLen    = Math.ceil(nPhrase.length * 0.8)
+    const phraseSTEM = nPhrase.slice(0, stemLen)
+    const spokenWords = nSpoken.split(' ')
+    if (spokenWords.some(w => w.startsWith(phraseSTEM))) return true
   }
 
-  // Word-level: każde słowo frazy musi być w mówionym tekście
+  // Multi-word phrase: every word of the phrase must appear in spoken
   const phraseWords = nPhrase.split(' ')
-  if (phraseWords.length > 1) {
+  if (phraseWords.length >= 2) {
     const spokenWords = nSpoken.split(' ')
-    const allMatch = phraseWords.every(pw =>
-      spokenWords.some(sw => sw.startsWith(pw.slice(0, Math.max(3, pw.length - 2))))
-    )
-    if (allMatch) return true
+    const allPresent  = phraseWords.every(pw => {
+      // Short words (< 4 chars): exact match required
+      if (pw.length < 4) return spokenWords.includes(pw)
+      if (spokenWords.includes(pw)) return true
+      // Longer words: allow stem match within spoken words
+      const pStem = pw.slice(0, Math.ceil(pw.length * 0.8))
+      return spokenWords.some(sw => sw.length >= 4 && sw.startsWith(pStem))
+    })
+    if (allPresent) return true
   }
 
   return false
 }
 
-/**
- * Sprawdza czy mówiony tekst zawiera poprawną odpowiedź lub któryś z synonimów.
- */
-export function isAnswerMatch(spoken: string, answer: string, synonyms: string[] = []): boolean {
-  if (!spoken) return false
+// ─────────────────────────────────────────────────────────────────────────────
+// Public API
+// ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Checks if spoken text matches the answer or any synonym.
+ * @param strict true = word-boundary only (interim), false = fuzzy (final)
+ */
+export function isAnswerMatch(
+  spoken:   string,
+  answer:   string,
+  synonyms: string[] = [],
+  strict    = false,
+): boolean {
+  if (!spoken) return false
   const nSpoken = normalizeText(spoken)
   if (!nSpoken) return false
 
-  // Check main answer
-  const nAnswer = normalizeText(answer)
-  if (nAnswer && matchesPhrase(nSpoken, nAnswer)) return true
-
-  // Check synonyms
-  for (const syn of synonyms) {
-    const nSyn = normalizeText(syn)
-    if (nSyn && matchesPhrase(nSpoken, nSyn)) return true
-  }
-
-  return false
+  const candidates = [answer, ...synonyms].filter(Boolean)
+  return candidates.some(c => {
+    const nc = normalizeText(c)
+    return nc ? matchesPhrase(nSpoken, nc, strict) : false
+  })
 }
 
-/**
- * Sprawdza czy wypowiedziano komendę "pass".
- */
 export function isPassCommand(spoken: string): boolean {
-  const n = normalizeText(spoken)
-  const passWords = ['pass', 'pas', 'dalej', 'nastepne', 'nastepny', 'skip', 'pomiń', 'pomin']
-  return passWords.some(w => n === w || n.startsWith(w + ' ') || n.endsWith(' ' + w))
+  const n    = normalizeText(spoken)
+  const cmds = ['pass', 'pas', 'dalej', 'nastepne', 'nastepny', 'skip', 'pomin']
+  return cmds.some(w => n === w || n.startsWith(w + ' ') || n.endsWith(' ' + w))
 }
