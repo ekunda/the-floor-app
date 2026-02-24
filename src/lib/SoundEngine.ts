@@ -1,9 +1,9 @@
 const SOUNDS = {
-	bgMusic: 'sounds/bg-music.mp3',
-	duelMusic: 'sounds/duel-music.mp3',
-	countdown: 'sounds/countdown.mp3',
-	buzzer: 'sounds/buzzer.mp3',
-	applause: 'sounds/applause.mp3',
+	bgMusic: '/sounds/bg-music.mp3',
+	duelMusic: '/sounds/duel-music.mp3',
+	countdown: '/sounds/countdown.mp3',
+	buzzer: '/sounds/buzzer.mp3',
+	applause: '/sounds/applause.mp3',
 	correct: 'sounds/correct.mp3',
 }
 
