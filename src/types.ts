@@ -33,6 +33,7 @@ export interface Question {
   category_id: string
   image_path: string | null
   answer: string
+  synonyms: string[]   // alternative accepted answers
   created_at: string
 }
 
