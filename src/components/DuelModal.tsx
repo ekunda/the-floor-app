@@ -26,6 +26,8 @@ export default function DuelModal() {
   const [winner, setWinner]               = useState<WinnerNum>(null)
   const [intervalId, setIntervalId]       = useState<ReturnType<typeof setInterval> | null>(null)
   const [speechEnabled, setSpeechEnabled] = useState(false)
+  // lang comes from duel.lang (set per-category in admin panel)
+
 
   const speechSupported = isSpeechRecognitionSupported()
 
@@ -264,7 +266,7 @@ export default function DuelModal() {
     onFinal:   handleFinalResult,
     onInterim: handleInterimResult,
     active:    speechActive,
-    lang:      'pl-PL',
+    lang:      duel?.lang === 'both' ? ['pl-PL', 'en-US'] : (duel?.lang ?? 'pl-PL'),
   })
 
   /* ── Keyboard handler ── */
@@ -350,7 +352,7 @@ export default function DuelModal() {
           {duel.started && speechSupported && (
             <button
               onClick={() => setSpeechEnabled(s => !s)}
-              title={speechEnabled ? 'Wyłącz mikrofon (M)' : 'Włącz mikrofon (M)'}
+              title={speechEnabled ? `Wyłącz mikrofon (M) — ${duel?.lang === 'both' ? 'PL+EN' : duel?.lang ?? 'pl-PL'}` : `Włącz mikrofon (M) — ${duel?.lang === 'both' ? 'PL+EN' : duel?.lang ?? 'pl-PL'}`}
               style={{ position: 'absolute', right: 52, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}
             >
               <span style={{
@@ -377,20 +379,30 @@ export default function DuelModal() {
             </div>
 
             {speechSupported && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 30 }}>
-                <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>🎤 Rozpoznawanie mowy</span>
-                <button onClick={() => setSpeechEnabled(s => !s)} style={{
-                  width: 44, height: 24, borderRadius: 12, position: 'relative', cursor: 'pointer',
-                  background: speechEnabled ? 'rgba(99,102,241,0.4)' : 'rgba(255,255,255,0.1)',
-                  border: `1px solid ${speechEnabled ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.15)'}`,
-                  transition: 'all 0.25s',
-                }}>
-                  <div style={{
-                    position: 'absolute', top: 3, left: speechEnabled ? 22 : 3,
-                    width: 16, height: 16, borderRadius: '50%', transition: 'all 0.25s',
-                    background: speechEnabled ? '#818cf8' : 'rgba(255,255,255,0.4)',
-                  }} />
-                </button>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+                {/* Mic on/off toggle */}
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 30 }}>
+                  <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>🎤 Rozpoznawanie mowy</span>
+                  <button onClick={() => setSpeechEnabled(s => !s)} style={{
+                    width: 44, height: 24, borderRadius: 12, position: 'relative', cursor: 'pointer',
+                    background: speechEnabled ? 'rgba(99,102,241,0.4)' : 'rgba(255,255,255,0.1)',
+                    border: `1px solid ${speechEnabled ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.15)'}`,
+                    transition: 'all 0.25s',
+                  }}>
+                    <div style={{
+                      position: 'absolute', top: 3, left: speechEnabled ? 22 : 3,
+                      width: 16, height: 16, borderRadius: '50%', transition: 'all 0.25s',
+                      background: speechEnabled ? '#818cf8' : 'rgba(255,255,255,0.4)',
+                    }} />
+                  </button>
+                </div>
+
+                {/* Lang badge — shows language set for this category */}
+                {speechEnabled && (
+                  <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem', letterSpacing: 1 }}>
+                    {duel?.lang === 'both' ? '🌐 pl + en' : duel?.lang === 'en-US' ? '🇺🇸 English' : '🇵🇱 Polski'}
+                  </div>
+                )}
               </div>
             )}
 

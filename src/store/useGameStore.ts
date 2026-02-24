@@ -1,7 +1,7 @@
 import { create } from 'zustand'
 import { supabase } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
-import { Category, DuelState, GameStats, Question, Tile, TileOwner } from '../types'
+import { Category, DuelState, GameStats, Question, SpeechLang, Tile, TileOwner } from '../types'
 import { BOARD_PRESETS, useConfigStore } from './useConfigStore'
 
 export const CATEGORY_EMOJI: Record<string, string> = {
@@ -74,6 +74,7 @@ interface GameStore {
 function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })[] {
   return cats.map(cat => ({
     ...cat,
+    lang: cat.lang ?? 'pl-PL',
     questions: (cat.questions ?? []).map((q: any) => ({
       ...q,
       synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
@@ -93,7 +94,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   loadCategories: async () => {
     const { data: cats } = await supabase
-      .from('categories').select('*, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at')
+      .from('categories').select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at')
     const full = normalizeQuestions(cats ?? [])
     set({ categories: full })
 
@@ -109,7 +110,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     // Load fresh categories & config from Supabase
     const [{ data: cats }] = await Promise.all([
-      supabase.from('categories').select('*, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at'),
+      supabase.from('categories').select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at'),
       useConfigStore.getState().fetch(),
     ])
     const categories = normalizeQuestions(cats ?? [])
@@ -133,6 +134,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         categoryId: sd.categoryId,
         categoryName: sd.categoryName,
         emoji: sd.emoji,
+        lang: cat?.lang ?? 'pl-PL',
         questions,
         usedIds: new Set(sd.usedIds),
         timer1: sd.timer1,
@@ -228,6 +230,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         tileIdx: cursor, categoryId: tile.categoryId,
         categoryName: tile.categoryName,
         emoji: getCatEmoji(tile.categoryName, cat?.emoji),
+        lang: cat?.lang ?? 'pl-PL',
         questions, usedIds: new Set(),
         timer1: cfg.DUEL_TIME, timer2: cfg.DUEL_TIME,
         active: 1, paused: false, started: false, currentQuestion: null,

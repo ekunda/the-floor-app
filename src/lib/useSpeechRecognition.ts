@@ -1,13 +1,18 @@
 /**
  * useSpeechRecognition — Web Speech API hook
  *
- * Architektura:
- * - onInterim: odpala z debouncingiem 200ms, strict matching (word-boundary only)
- * - onFinal:   odpala natychmiast dla wszystkich 3 alternatyw, fuzzy matching
- * - Callbacks w refs — nigdy stale closure
+ * Wspiera wiele języków równolegle (pl-PL + en-US).
+ * Każdy język = osobna instancja SpeechRecognition na tym samym mikrofonie.
+ *
+ * Zasady wydajności:
+ * - Zero debounce — każda ms opóźnienia jest odczuwalna
+ * - Interim: odpala na KAŻDĄ zmianę tekstu (nie tylko nowe słowo)
+ * - Szybka ścieżka dla 1 języka — bez Map deduplikacji
+ * - Multi-lang: deduplikacja przez 600ms zapobiega podwójnym trafieniom
+ * - Restart po 100ms — minimalna przerwa w ciągłości nasłuchu
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 type SpeechRecognitionInstance = {
   lang: string; continuous: boolean; interimResults: boolean; maxAlternatives: number
@@ -22,83 +27,97 @@ type SpeechRecognitionEvent = {
 }
 type SpeechRecognitionErrorEvent = { error: string; message: string }
 
-function getSpeechRecognition(): (new () => SpeechRecognitionInstance) | null {
+function getSR(): (new () => SpeechRecognitionInstance) | null {
   if (typeof window === 'undefined') return null
   return (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition || null
 }
 
 export function isSpeechRecognitionSupported(): boolean {
-  return getSpeechRecognition() !== null
+  return getSR() !== null
 }
 
 interface UseSpeechRecognitionOptions {
   onFinal:   (transcript: string) => void
   onInterim: (transcript: string) => void
   active: boolean
-  lang?: string
+  /** Jeden język lub tablica — każdy uruchamia osobną instancję równolegle */
+  lang?: string | string[]
 }
 
 export function useSpeechRecognition({ onFinal, onInterim, active, lang = 'pl-PL' }: UseSpeechRecognitionOptions) {
-  const recognitionRef     = useRef<SpeechRecognitionInstance | null>(null)
-  const activeRef          = useRef(active)
-  const restartTimerRef    = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const interimDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const onFinalRef         = useRef(onFinal)
-  const onInterimRef       = useRef(onInterim)
+  const langs = Array.isArray(lang) ? [...new Set(lang)] : [lang]
+  const multiLang = langs.length > 1
+
+  // refs — zawsze świeże w callbackach
+  const onFinalRef      = useRef(onFinal)
+  const onInterimRef    = useRef(onInterim)
+  const activeRef       = useRef(active)
+  // mapa lang → { rec, restartTimer, lastInterim }
+  const instancesRef    = useRef<Map<string, {
+    rec: SpeechRecognitionInstance
+    timer: ReturnType<typeof setTimeout> | null
+    lastInterim: string
+  }>>(new Map())
+  // deduplikacja: tylko dla multi-lang (unika double-fire tego samego tekstu)
+  const dedupeRef       = useRef<Map<string, number>>(new Map())
+
   const [listening, setListening] = useState(false)
   const [error, setError]         = useState<string | null>(null)
 
-  // Keep callbacks always fresh
-  activeRef.current    = active
   onFinalRef.current   = onFinal
   onInterimRef.current = onInterim
+  activeRef.current    = active
 
-  const stop = useCallback(() => {
-    if (restartTimerRef.current)    { clearTimeout(restartTimerRef.current);    restartTimerRef.current = null }
-    if (interimDebounceRef.current) { clearTimeout(interimDebounceRef.current); interimDebounceRef.current = null }
-    if (recognitionRef.current) {
-      recognitionRef.current.onend = null
-      recognitionRef.current.abort()
-      recognitionRef.current = null
-    }
-    setListening(false)
-  }, [])
+  // ── Tworzy i startuje instancję dla jednego języka ──────────────────────
+  function spawnInstance(SR: new () => SpeechRecognitionInstance, l: string) {
+    const DEDUPE_MS = 600
 
-  const start = useCallback(() => {
-    const SR = getSpeechRecognition()
-    if (!SR) { setError('Twoja przeglądarka nie obsługuje rozpoznawania mowy. Użyj Chrome lub Edge.'); return }
-    if (recognitionRef.current) { recognitionRef.current.onend = null; recognitionRef.current.abort() }
+    const existing = instancesRef.current.get(l)
+    if (existing) { existing.rec.onend = null; existing.rec.abort(); if (existing.timer) clearTimeout(existing.timer) }
+
+    const state = { rec: null as any, timer: null as ReturnType<typeof setTimeout> | null, lastInterim: '' }
 
     const rec = new SR()
-    rec.lang            = lang
+    rec.lang            = l
     rec.continuous      = true
     rec.interimResults  = true
     rec.maxAlternatives = 3
 
-    rec.onstart = () => { setListening(true); setError(null) }
+    state.rec = rec
+
+    rec.onstart = () => { setListening(true); setError(null); state.lastInterim = '' }
 
     rec.onresult = (e: SpeechRecognitionEvent) => {
+      const now = Date.now()
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i]
+
         if (result.isFinal) {
-          // Cancel pending interim — final supersedes it
-          if (interimDebounceRef.current) { clearTimeout(interimDebounceRef.current); interimDebounceRef.current = null }
-          // Send all alternatives (Chrome gives up to 3 — helps with synonym matching)
+          state.lastInterim = ''
           const alts = Math.min(result.length ?? 1, 3)
           for (let alt = 0; alt < alts; alt++) {
             const t = result[alt]?.transcript?.trim()
-            if (t) onFinalRef.current(t)
+            if (!t) continue
+            if (multiLang) {
+              const key = t.toLowerCase()
+              const seen = dedupeRef.current.get(key)
+              if (seen && now - seen < DEDUPE_MS) continue
+              dedupeRef.current.set(key, now)
+            }
+            onFinalRef.current(t)
           }
         } else {
-          // Debounce interim by 200ms — avoids firing on every character
+          // Interim: odpala na każdą zmianę — zero throttle dla max responsywności
           const t = result[0]?.transcript?.trim()
-          if (t) {
-            if (interimDebounceRef.current) clearTimeout(interimDebounceRef.current)
-            interimDebounceRef.current = setTimeout(() => {
-              interimDebounceRef.current = null
-              onInterimRef.current(t)
-            }, 200)
+          if (!t || t === state.lastInterim) continue
+          state.lastInterim = t
+          if (multiLang) {
+            const key = t.toLowerCase()
+            const seen = dedupeRef.current.get(key)
+            if (seen && now - seen < DEDUPE_MS) continue
+            dedupeRef.current.set(key, now)
           }
+          onInterimRef.current(t)
         }
       }
     }
@@ -111,19 +130,55 @@ export function useSpeechRecognition({ onFinal, onInterim, active, lang = 'pl-PL
 
     rec.onend = () => {
       setListening(false)
+      state.lastInterim = ''
       if (activeRef.current) {
-        restartTimerRef.current = setTimeout(() => { if (activeRef.current) start() }, 300)
+        state.timer = setTimeout(() => {
+          if (activeRef.current && instancesRef.current.has(l)) spawnInstance(SR, l)
+        }, 100)
+        // Aktualizuj timer w mapie
+        const entry = instancesRef.current.get(l)
+        if (entry) entry.timer = state.timer
       }
     }
 
-    recognitionRef.current = rec
-    try { rec.start() } catch { /* ignore */ }
-  }, [lang])
+    instancesRef.current.set(l, state)
+    try { rec.start() } catch { /* already starting */ }
+  }
+
+  function stopAll() {
+    instancesRef.current.forEach(({ rec, timer }) => {
+      if (timer) clearTimeout(timer)
+      rec.onend = null
+      rec.abort()
+    })
+    instancesRef.current.clear()
+    dedupeRef.current.clear()
+    setListening(false)
+  }
+
+  function startAll(SR: new () => SpeechRecognitionInstance) {
+    // Usuń instancje języków których już nie ma
+    instancesRef.current.forEach((_, l) => {
+      if (!langs.includes(l)) {
+        const entry = instancesRef.current.get(l)!
+        if (entry.timer) clearTimeout(entry.timer)
+        entry.rec.onend = null; entry.rec.abort()
+        instancesRef.current.delete(l)
+      }
+    })
+    // Uruchom nowe — z małym przesunięciem tylko gdy jest >1 (unikamy race na mikrofon)
+    langs.forEach((l, idx) => {
+      if (instancesRef.current.has(l)) return
+      if (idx === 0) { spawnInstance(SR, l) } else { setTimeout(() => { if (activeRef.current) spawnInstance(SR, l) }, idx * 60) }
+    })
+  }
 
   useEffect(() => {
-    if (active) { start() } else { stop() }
-    return () => stop()
-  }, [active])
+    const SR = getSR()
+    if (!SR) { setError('Twoja przeglądarka nie obsługuje rozpoznawania mowy. Użyj Chrome lub Edge.'); return }
+    if (active) { startAll(SR) } else { stopAll() }
+    return () => stopAll()
+  }, [active, langs.join(',')])
 
   return { listening, error }
 }
@@ -136,74 +191,49 @@ export function normalizeText(text: string): string {
   return text
     .toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')  // ą→a, ę→e, ó→o etc.
+    .replace(/[\u0300-\u036f]/g, '')  // ą→a, ę→e, ó→o itd.
     .replace(/[^a-z0-9\s]/g, '')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Word-boundary match
-// Prevents "las" from matching inside "klasyczny" via containment check
+// Matching
 // ─────────────────────────────────────────────────────────────────────────────
 
-function containsWholePhrase(spokenNorm: string, phraseNorm: string): boolean {
-  if (spokenNorm === phraseNorm) return true
-  const escaped = phraseNorm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-  return new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`).test(spokenNorm)
+function containsWholePhrase(spoken: string, phrase: string): boolean {
+  if (spoken === phrase) return true
+  const esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?:^|\\s)${esc}(?:\\s|$)`).test(spoken)
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Phrase matching
-// strict=true  → word-boundary only (safe for interim/partial text)
-// strict=false → + stem matching and word-level fuzzy (for final/inflections)
-// ─────────────────────────────────────────────────────────────────────────────
 
 function matchesPhrase(nSpoken: string, nPhrase: string, strict: boolean): boolean {
   if (!nSpoken || !nPhrase) return false
-
-  // Word-boundary match (both modes)
   if (containsWholePhrase(nSpoken, nPhrase)) return true
-
   if (strict) return false
 
-  // ── Final-only fuzzy matching ──────────────────────────────────────────
-
-  // Stem match: "wodospad" ↔ "wodospady", "niedźwiedź" ↔ "niedźwiedzia"
-  // Only for words >= 6 chars to avoid short-word false positives
+  // Stem: "wodospad" ↔ "wodospady" — tylko słowa ≥6 znaków
   if (nPhrase.length >= 6 && nSpoken.length >= 5) {
-    const stemLen    = Math.ceil(nPhrase.length * 0.8)
-    const phraseSTEM = nPhrase.slice(0, stemLen)
-    const spokenWords = nSpoken.split(' ')
-    if (spokenWords.some(w => w.startsWith(phraseSTEM))) return true
+    const stem  = nPhrase.slice(0, Math.ceil(nPhrase.length * 0.8))
+    if (nSpoken.split(' ').some(w => w.startsWith(stem))) return true
   }
 
-  // Multi-word phrase: every word of the phrase must appear in spoken
-  const phraseWords = nPhrase.split(' ')
-  if (phraseWords.length >= 2) {
-    const spokenWords = nSpoken.split(' ')
-    const allPresent  = phraseWords.every(pw => {
-      // Short words (< 4 chars): exact match required
-      if (pw.length < 4) return spokenWords.includes(pw)
-      if (spokenWords.includes(pw)) return true
-      // Longer words: allow stem match within spoken words
+  // Multi-word: każde słowo frazy musi pasować do spoken
+  const pWords = nPhrase.split(' ')
+  if (pWords.length >= 2) {
+    const sWords = nSpoken.split(' ')
+    const ok = pWords.every(pw => {
+      if (pw.length < 4) return sWords.includes(pw)
+      if (sWords.includes(pw)) return true
       const pStem = pw.slice(0, Math.ceil(pw.length * 0.8))
-      return spokenWords.some(sw => sw.length >= 4 && sw.startsWith(pStem))
+      return sWords.some(sw => sw.length >= 4 && sw.startsWith(pStem))
     })
-    if (allPresent) return true
+    if (ok) return true
   }
 
   return false
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Public API
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Checks if spoken text matches the answer or any synonym.
- * @param strict true = word-boundary only (interim), false = fuzzy (final)
- */
 export function isAnswerMatch(
   spoken:   string,
   answer:   string,
@@ -213,16 +243,14 @@ export function isAnswerMatch(
   if (!spoken) return false
   const nSpoken = normalizeText(spoken)
   if (!nSpoken) return false
-
-  const candidates = [answer, ...synonyms].filter(Boolean)
-  return candidates.some(c => {
+  return [answer, ...synonyms].filter(Boolean).some(c => {
     const nc = normalizeText(c)
     return nc ? matchesPhrase(nSpoken, nc, strict) : false
   })
 }
 
 export function isPassCommand(spoken: string): boolean {
-  const n    = normalizeText(spoken)
-  const cmds = ['pass', 'pas', 'dalej', 'nastepne', 'nastepny', 'skip', 'pomin']
-  return cmds.some(w => n === w || n.startsWith(w + ' ') || n.endsWith(' ' + w))
+  const n = normalizeText(spoken)
+  return ['pass', 'pas', 'dalej', 'nastepne', 'nastepny', 'skip', 'pomin']
+    .some(w => n === w || n.startsWith(w + ' ') || n.endsWith(' ' + w))
 }

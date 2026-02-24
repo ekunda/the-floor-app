@@ -21,10 +21,13 @@ export interface PlayerSettings {
   color: string
 }
 
+export type SpeechLang = 'pl-PL' | 'en-US' | 'both'
+
 export interface Category {
   id: string
   name: string
   emoji: string
+  lang: SpeechLang
   created_at: string
 }
 
@@ -60,6 +63,7 @@ export interface DuelState {
   paused: boolean
   started: boolean
   currentQuestion: Question | null
+  lang: SpeechLang
 }
 
 export interface GameStats {

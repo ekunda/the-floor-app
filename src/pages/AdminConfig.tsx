@@ -4,7 +4,7 @@ import { SoundEngine } from '../lib/SoundEngine'
 import { clearSession, formatRemaining, sessionRemainingMs, supabase } from '../lib/supabase'
 import { BOARD_PRESETS, DEFAULTS, useConfigStore } from '../store/useConfigStore'
 import { useGameStore } from '../store/useGameStore'
-import { Category, GameConfig } from '../types'
+import { Category, GameConfig, SpeechLang } from '../types'
 
 type Section = 'categories' | 'board' | 'gameplay' | 'players' | 'display' | 'advanced'
 
@@ -94,13 +94,13 @@ export default function AdminConfig() {
 
   const addCat = async () => {
     if (!catName.trim()) return
-    await supabase.from('categories').insert({ name: catName.trim(), emoji: catEmoji })
+    await supabase.from('categories').insert({ name: catName.trim(), emoji: catEmoji, lang: catLang })
     setCatName(''); setCatEmoji('🎯'); loadCats()
   }
 
   const saveEditCat = async () => {
     if (!editing) return
-    await supabase.from('categories').update({ name: editing.name, emoji: editing.emoji }).eq('id', editing.id)
+    await supabase.from('categories').update({ name: editing.name, emoji: editing.emoji, lang: editing.lang ?? 'pl-PL' }).eq('id', editing.id)
     setEditing(null); loadCats()
   }
 
@@ -296,6 +296,7 @@ export default function AdminConfig() {
               cats={cats} catsLoading={catsLoading}
               catName={catName} setCatName={setCatName}
               catEmoji={catEmoji} setCatEmoji={setCatEmoji}
+              catLang={catLang} setCatLang={setCatLang}
               editing={editing} setEditing={setEditing}
               addCat={addCat} saveEditCat={saveEditCat} removeCat={removeCat}
               inp={inp}
@@ -470,6 +471,30 @@ export default function AdminConfig() {
 }
 
 // ══════════════════════════════════════════════════════════════════════
+// LANG PICKER — reusable 3-button component for speech language
+// ══════════════════════════════════════════════════════════════════════
+function LangPicker({ value, onChange }: { value: SpeechLang; onChange: (l: SpeechLang) => void }) {
+  const opts: { v: SpeechLang; label: string; title: string }[] = [
+    { v: 'pl-PL', label: '🇵🇱', title: 'Polski' },
+    { v: 'en-US', label: '🇺🇸', title: 'English' },
+    { v: 'both',  label: '🌐', title: 'Oba języki równocześnie' },
+  ]
+  return (
+    <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
+      {opts.map(o => (
+        <button key={o.v} title={o.title} onClick={() => onChange(o.v)} style={{
+          width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
+          background: value === o.v ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.05)',
+          border: `1px solid ${value === o.v ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.1)'}`,
+          fontSize: '0.9rem', lineHeight: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          transition: 'all 0.15s',
+        }}>{o.label}</button>
+      ))}
+    </div>
+  )
+}
+
+// ══════════════════════════════════════════════════════════════════════
 // KATEGORIE SECTION
 // ══════════════════════════════════════════════════════════════════════
 function CategoriesSection({ cats, catsLoading, catName, setCatName, catEmoji, setCatEmoji,
@@ -490,6 +515,7 @@ function CategoriesSection({ cats, catsLoading, catName, setCatName, catEmoji, s
           <input value={catName} onChange={e => setCatName(e.target.value)}
             onKeyDown={(e: any) => e.key === 'Enter' && addCat()}
             placeholder="Nazwa kategorii" style={{ ...inp, flex: 1, minWidth: 160 }} />
+          <LangPicker value={catLang} onChange={setCatLang} />
           <button onClick={addCat} disabled={!catName.trim()} style={{
             padding: '8px 20px', borderRadius: 8, flexShrink: 0,
             background: catName.trim() ? 'linear-gradient(135deg, #D4AF37, #FFD700)' : 'rgba(255,255,255,0.08)',
@@ -518,6 +544,7 @@ function CategoriesSection({ cats, catsLoading, catName, setCatName, catEmoji, s
                     style={{ ...inp, width: 52, textAlign: 'center', fontSize: '1.2rem' }} />
                   <input value={editing.name} onChange={(e: any) => setEditing({ ...editing, name: e.target.value })}
                     style={{ ...inp, flex: 1, minWidth: 140 }} />
+                  <LangPicker value={(editing.lang ?? 'pl-PL') as SpeechLang} onChange={l => setEditing({ ...editing, lang: l })} />
                   <button onClick={saveEditCat} style={{ padding: '7px 14px', borderRadius: 6, background: 'rgba(34,197,94,0.15)', border: '1px solid rgba(34,197,94,0.3)', color: '#4ade80', cursor: 'pointer', fontSize: '0.82rem' }}>✓ Zapisz</button>
                   <button onClick={() => setEditing(null)} style={{ padding: '7px 14px', borderRadius: 6, background: 'transparent', border: '1px solid rgba(255,255,255,0.1)', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '0.82rem' }}>Anuluj</button>
                 </div>
@@ -525,6 +552,10 @@ function CategoriesSection({ cats, catsLoading, catName, setCatName, catEmoji, s
                 <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
                   <span style={{ fontSize: '1.4rem', flexShrink: 0 }}>{cat.emoji}</span>
                   <span style={{ flex: 1, fontSize: '0.95rem', color: '#e0e0e0' }}>{cat.name}</span>
+                  <LangPicker value={(cat.lang ?? 'pl-PL') as SpeechLang} onChange={async l => {
+                    await supabase.from('categories').update({ lang: l }).eq('id', cat.id)
+                    setCats(prev => prev.map(x => x.id === cat.id ? { ...x, lang: l } : x))
+                  }} />
                   <div style={{ display: 'flex', gap: 6, flexShrink: 0, flexWrap: 'wrap' }}>
                     <Link to={`/admin/categories/${cat.id}/questions`} style={{
                       padding: '5px 12px', borderRadius: 6, background: 'rgba(212,175,55,0.1)',
