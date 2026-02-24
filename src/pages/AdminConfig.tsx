@@ -52,6 +52,7 @@ export default function AdminConfig() {
   const [cats, setCats]           = useState<Category[]>([])
   const [catName, setCatName]     = useState('')
   const [catEmoji, setCatEmoji]   = useState('🎯')
+  const [catLang, setCatLang]     = useState<SpeechLang>('pl-PL')
   const [editing, setEditing]     = useState<Category | null>(null)
   const [catsLoading, setCatsLoading] = useState(false)
 
@@ -498,6 +499,7 @@ function LangPicker({ value, onChange }: { value: SpeechLang; onChange: (l: Spee
 // KATEGORIE SECTION
 // ══════════════════════════════════════════════════════════════════════
 function CategoriesSection({ cats, catsLoading, catName, setCatName, catEmoji, setCatEmoji,
+  catLang, setCatLang,
   editing, setEditing, addCat, saveEditCat, removeCat, inp,
   bulkCatId, setBulkCatId, bulkFiles, setBulkFiles, bulkProgress, bulkUploading,
   bulkDone, setBulkDone, bulkError, setBulkError, bulkRef, handleBulkUpload,
