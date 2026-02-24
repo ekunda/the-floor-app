@@ -46,17 +46,21 @@ Przejąć jak najwięcej pól planszy przed wyczerpaniem czasu przeciwnika. Każ
 
 ### Rozpoznawanie mowy 🎤
 - Działa przez **Web Speech API** (Chrome/Edge) — bez zewnętrznych usług, bez klucza API
-- Obsługuje **język polski** (`pl-PL`)
+- **Wielojęzyczne** — obsługuje `pl-PL`, `en-US` oraz oba języki jednocześnie
+- Język rozpoznawania ustawiany **per kategoria** w panelu admina (🇵🇱 / 🇺🇸 / 🌐)
+- Tryb **🌐 Oba** działa jako leapfrog — pl-PL i en-US przełączają się bez przerw, omijając ograniczenie Chrome do jednej równoległej instancji
 - Rozpoznaje odpowiedź główną oraz wszystkie przypisane **synonimy**
-- **Fuzzy matching** — akceptuje odmiany fleksyjne (np. *wodospady* zamiast *wodospad*)
+- **Fuzzy matching** — akceptuje odmiany fleksyjne: polskie (wodospady→wodospad) i angielskie (lions→lion, wolves→wolf, running→run)
+- **Strip articles** — usuwa angielskie przedimki ze spoken tekstu ("it is a lion" → "lion" ✓)
 - **Word-boundary matching** — unika fałszywych trafień (np. *las* nie pasuje do *klasyczny*)
 - Mikrofon działa nieprzerwanie przez całą grę — zero opóźnień przy restarcie
-- Komendy pasa głosem: *pas*, *dalej*, *skip*, *pomiń*
+- Komendy pasa głosem: *pas*, *dalej*, *skip*, *pomiń*, *pass* — zabezpieczone przed podwójnym wywołaniem
 - Wskaźnik LED w nagłówku: 🟢 aktywny / 🟣 wstrzymany / ⚫ wyłączony
 
 ### Panel admina
 - Dostęp przez `/admin` z hasłem, sesja wygasa po 1 godzinie
-- **Zarządzanie kategoriami** — tworzenie, usuwanie, przypisywanie emoji
+- **Zarządzanie kategoriami** — tworzenie, usuwanie, przypisywanie emoji i języka rozpoznawania mowy
+- **Język per kategoria** — przycisk 🇵🇱 / 🇺🇸 / 🌐 przy każdej kategorii, zapisywany natychmiast do bazy
 - **Zarządzanie pytaniami** — dodawanie/edycja/usuwanie pytań ze zdjęciami
 - **Synonimy** — każde pytanie może mieć dowolną liczbę alternatywnych akceptowanych odpowiedzi
 - **Bulk upload zdjęć** — masowe przesyłanie zdjęć do kategorii
@@ -83,11 +87,11 @@ Przejąć jak najwięcej pól planszy przed wyczerpaniem czasu przeciwnika. Każ
 - **React Router v6** — routing SPA
 - **Zustand** — globalny stan gry i konfiguracji (bez boilerplate Redux)
 - **Canvas API** — plansza gry renderowana przez `requestAnimationFrame` dla płynnych animacji
-- **Web Speech API** — rozpoznawanie mowy (Chrome/Edge, bez zależności)
+- **Web Speech API** — rozpoznawanie mowy wielojęzyczne (Chrome/Edge, bez zależności)
 
 ### Backend / Infrastruktura
 - **Supabase** — baza danych PostgreSQL + autentykacja + storage
-  - Tabela `categories` — kategorie z emoji
+  - Tabela `categories` — kategorie z emoji i językiem rozpoznawania mowy
   - Tabela `questions` — pytania z odpowiedziami, synonimami i ścieżką do zdjęcia
   - Tabela `config` — konfiguracja gry synchronizowana między sesjami
   - Bucket `question-images` — zdjęcia pytań (publiczny CDN)
@@ -100,6 +104,7 @@ useConfigStore (Zustand)        useGameStore (Zustand)
 ├── players [gold, silver]      ├── tiles (plansza)
 └── tileCategories              ├── cursor
                                 ├── duel (DuelState)
+                                │   └── lang (SpeechLang)
                                 └── blockInput, toastText, showStats
 ```
 
@@ -118,6 +123,7 @@ CREATE TABLE categories (
   id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name       text NOT NULL,
   emoji      text NOT NULL DEFAULT '🎯',
+  lang       text NOT NULL DEFAULT 'pl-PL',  -- 'pl-PL' | 'en-US' | 'both'
   created_at timestamptz DEFAULT now()
 );
 
@@ -182,6 +188,10 @@ Wykonaj w Supabase SQL Editor:
 ALTER TABLE questions ADD COLUMN IF NOT EXISTS synonyms text[] DEFAULT '{}';
 UPDATE questions SET synonyms = '{}' WHERE synonyms IS NULL;
 
+-- Jeśli dodajesz obsługę języka do istniejącej bazy:
+ALTER TABLE categories ADD COLUMN IF NOT EXISTS lang text DEFAULT 'pl-PL';
+UPDATE categories SET lang = 'pl-PL' WHERE lang IS NULL;
+
 -- Storage bucket (w panelu Supabase: Storage → New bucket)
 -- Nazwa: question-images, Public: true
 ```
@@ -207,17 +217,17 @@ src/
 ├── pages/
 │   ├── Game.tsx               # Główny ekran gry
 │   ├── Admin.tsx              # Logowanie do panelu
-│   ├── AdminConfig.tsx        # Panel konfiguracji (kategorie, gra, gracze)
+│   ├── AdminConfig.tsx        # Panel konfiguracji (kategorie + lang picker, gra, gracze)
 │   └── AdminQuestions.tsx     # Edytor pytań z synonimami
 ├── store/
 │   ├── useGameStore.ts        # Stan gry (Zustand)
 │   └── useConfigStore.ts      # Konfiguracja i gracze (Zustand)
 ├── lib/
-│   ├── useSpeechRecognition.ts # Web Speech API hook + fuzzy matching
+│   ├── useSpeechRecognition.ts # Web Speech API — wielojęzyczny hook + fuzzy matching
 │   ├── SoundEngine.ts          # Muzyka i efekty dźwiękowe
 │   ├── persistence.ts          # Serializacja/deserializacja stanu gry
 │   └── supabase.ts             # Klient Supabase + helpers sesji admina
-└── types.ts                   # Interfejsy TypeScript
+└── types.ts                   # Interfejsy TypeScript (w tym SpeechLang)
 ```
 
 ---

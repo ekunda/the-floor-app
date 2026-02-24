@@ -54,6 +54,7 @@ export default function DuelModal() {
   // ── Per-question anti-double-fire: track ID, not time ───────────────────
   // Resets automatically when question changes — no blocking on next question
   const matchedQuestionIdRef = useRef<string | null>(null)
+  const passedQuestionIdRef  = useRef<string | null>(null)
 
   // Keep refs fresh on every render
   duelRef.current       = duel
@@ -67,6 +68,7 @@ export default function DuelModal() {
     currentAnswerRef.current   = q?.answer ?? ''
     currentSynonymsRef.current = Array.isArray(q?.synonyms) ? q!.synonyms : []
     matchedQuestionIdRef.current = null  // allow matching on new question
+    passedQuestionIdRef.current  = null
   }, [duel?.currentQuestion?.id])
 
   const isOpen = !!duel
@@ -138,6 +140,7 @@ export default function DuelModal() {
       setWinner(null); setImageUrl('')
       winnerHandled.current    = false
       matchedQuestionIdRef.current = null
+      passedQuestionIdRef.current  = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel])
@@ -226,8 +229,10 @@ export default function DuelModal() {
 
     const questionId = d.currentQuestion?.id ?? null
 
-    // Pass command — nie blokujemy ID, pass zawsze może odpalić
+    // Pass command — blokujemy per-question (tak samo jak odpowiedź)
     if (isPassCommand(transcript)) {
+      if (passedQuestionIdRef.current === questionId) return
+      passedQuestionIdRef.current = questionId
       handlePassRef.current()
       return
     }
