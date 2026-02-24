@@ -51,7 +51,7 @@ export const SoundEngine = {
 	},
 
 	playCountdown(onDone: () => void) {
-		this.play('countdown', 0.85)
+		this.play('countdown', 1)
 		return onDone // countdown animation handled in React component
 	},
 

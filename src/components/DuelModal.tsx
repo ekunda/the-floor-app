@@ -17,7 +17,7 @@ export default function DuelModal() {
 	const nextQuestion = useGameStore(s => s.nextQuestion)
 	const endDuelWithWinner = useGameStore(s => s.endDuelWithWinner)
 	const endDuelDraw = useGameStore(s => s.endDuelDraw)
-	const { config } = useConfigStore()
+	const { config, players } = useConfigStore()
 
 	const [countdown, setCountdown] = useState<string | null>(null)
 	const [imageUrl, setImageUrl] = useState<string>('')
@@ -28,8 +28,15 @@ export default function DuelModal() {
 	const feedbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const winnerTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 	const winnerHandled = useRef(false)
+	// ── FIX: track all countdown timeouts so ESC can cancel them ──
+	const countdownTimeouts = useRef<ReturnType<typeof setTimeout>[]>([])
 
 	const isOpen = !!duel
+
+	/* ── Stop bgMusic when modal opens ── */
+	useEffect(() => {
+		if (isOpen) SoundEngine.stopBg(1000)
+	}, [isOpen])
 
 	/* ── Resolve image URL ── */
 	const resolveImageUrl = useCallback((imagePath: string | null | undefined): string => {
@@ -46,10 +53,9 @@ export default function DuelModal() {
 		setImageUrl(resolveImageUrl(duel.currentQuestion.image_path))
 	}, [duel?.currentQuestion?.id, resolveImageUrl])
 
-	/* ── Ticker: start/stop interval based on duel state ── */
+	/* ── Ticker: start/stop based on duel state ── */
 	useEffect(() => {
 		const shouldRun = duel?.started && !duel.paused
-
 		if (!shouldRun) {
 			if (intervalId) {
 				clearInterval(intervalId)
@@ -57,14 +63,10 @@ export default function DuelModal() {
 			}
 			return
 		}
-
-		// Already running
 		if (intervalId) return
-
 		const tick = useGameStore.getState().tick
 		const id = setInterval(tick, 1000)
 		setIntervalId(id)
-
 		return () => {
 			clearInterval(id)
 			setIntervalId(null)
@@ -78,12 +80,10 @@ export default function DuelModal() {
 		if (!d?.started || !d.paused || winnerHandled.current) return
 		if (d.timer1 > 0 && d.timer2 > 0) return
 
-		// Stop ticker
 		if (intervalId) {
 			clearInterval(intervalId)
 			setIntervalId(null)
 		}
-
 		winnerHandled.current = true
 
 		const loserIsP1 = d.timer1 <= 0
@@ -93,16 +93,15 @@ export default function DuelModal() {
 
 		winnerTimer.current = setTimeout(() => {
 			if (loserIsP1 && loserIsP2) {
-				// Both ran out simultaneously
 				setWinner('draw')
 				endDuelDraw()
-				SoundEngine.play('applause', 0.6)
+				SoundEngine.play('applause', volumeFactor(0.6))
 				winnerTimer.current = setTimeout(handleClose, config.WIN_CLOSE_MS)
 			} else {
 				const winnerNum: 1 | 2 = loserIsP1 ? 2 : 1
 				setWinner(winnerNum)
 				endDuelWithWinner(winnerNum)
-				SoundEngine.play('applause', 0.9)
+				SoundEngine.play('applause', volumeFactor(0.9))
 				winnerTimer.current = setTimeout(handleClose, config.WIN_CLOSE_MS)
 			}
 		}, 1200)
@@ -125,27 +124,45 @@ export default function DuelModal() {
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [duel])
 
+	/* ── Volume helper ── */
+	const volumeFactor = (base: number) => base * (config.SOUND_VOLUME / 100)
+
+	/* ── Cancel all pending countdown timeouts ── */
+	const cancelCountdown = useCallback(() => {
+		countdownTimeouts.current.forEach(id => clearTimeout(id))
+		countdownTimeouts.current = []
+		setCountdown(null)
+	}, [])
+
 	/* ── Countdown animation ── */
 	const runCountdown = useCallback(() => {
-		SoundEngine.play('countdown', 0.85)
-		const steps: { label: string; delay: number }[] = [
+		SoundEngine.play('countdown', volumeFactor(0.85))
+
+		const steps = [
 			{ label: '3', delay: 0 },
 			{ label: '2', delay: 1000 },
 			{ label: '1', delay: 2000 },
 			{ label: 'START!', delay: 3000 },
 		]
+
+		// Store each timeout ID so we can cancel them on ESC
 		steps.forEach(({ label, delay }) => {
-			setTimeout(() => setCountdown(label), delay)
+			const id = setTimeout(() => setCountdown(label), delay)
+			countdownTimeouts.current.push(id)
 		})
-		setTimeout(() => {
+
+		const finalId = setTimeout(() => {
 			setCountdown(null)
+			countdownTimeouts.current = []
 			const q = nextQuestion()
 			useGameStore.setState(s => ({
 				duel: s.duel ? { ...s.duel, paused: false, currentQuestion: q } : null,
 			}))
-			SoundEngine.startBg('duelMusic', 0.22)
+			SoundEngine.startBg('duelMusic', volumeFactor(0.22))
 		}, 4300)
-	}, [nextQuestion])
+		countdownTimeouts.current.push(finalId)
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [nextQuestion, config.SOUND_VOLUME])
 
 	/* ── Keyboard handler ── */
 	useEffect(() => {
@@ -207,10 +224,9 @@ export default function DuelModal() {
 
 	const handleCorrect = (playerNum: 1 | 2) => {
 		if (!duel?.started || blockInput || countdown) return
-		// Ignore input from the inactive player — no sound, no feedback
 		if (duel.active !== playerNum) return
 		const ans = duel.currentQuestion?.answer ?? '???'
-		SoundEngine.play('correct', 0.75)
+		SoundEngine.play('correct', volumeFactor(0.75))
 		showFeedback(`✓  ${ans}`, 'correct')
 		markCorrect(playerNum)
 	}
@@ -218,12 +234,15 @@ export default function DuelModal() {
 	const handlePass = () => {
 		if (!duel?.started || blockInput || countdown) return
 		const ans = duel.currentQuestion?.answer ?? '???'
-		SoundEngine.play('buzzer', 0.4)
+		SoundEngine.play('buzzer', volumeFactor(0.4))
 		showFeedback(`⏱ PAS  ·  ${ans}`, 'pass')
 		pass()
 	}
 
 	const handleClose = () => {
+		// ── FIX: cancel all pending countdown timeouts first ──
+		cancelCountdown()
+
 		if (intervalId) {
 			clearInterval(intervalId)
 			setIntervalId(null)
@@ -231,7 +250,7 @@ export default function DuelModal() {
 		if (winnerTimer.current) clearTimeout(winnerTimer.current)
 		if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
 		SoundEngine.stopBg(500)
-		setTimeout(() => SoundEngine.startBg('bgMusic', 0.3), 600)
+		setTimeout(() => SoundEngine.startBg('bgMusic', volumeFactor(0.3)), 600)
 		closeDuel()
 	}
 
@@ -239,9 +258,10 @@ export default function DuelModal() {
 
 	const t1 = duel.timer1
 	const t2 = duel.timer2
+	const p1 = players[0]
+	const p2 = players[1]
 
 	const timerColor = (t: number) => (t <= 5 ? '#ef4444' : t <= 15 ? '#facc15' : '#ffffff')
-
 	const timerGlow = (t: number) =>
 		t <= 5 ? '0 0 30px rgba(239,68,68,0.7)' : t <= 15 ? '0 0 20px rgba(250,204,21,0.5)' : 'none'
 
@@ -270,7 +290,7 @@ export default function DuelModal() {
 					flexDirection: 'column',
 					overflow: 'hidden',
 				}}>
-				{/* ── Header ── */}
+				{/* Header */}
 				<div
 					style={{
 						display: 'flex',
@@ -280,6 +300,7 @@ export default function DuelModal() {
 						padding: '12px 48px',
 						borderBottom: '1px solid rgba(255,255,255,0.06)',
 						background: 'rgba(255,255,255,0.02)',
+						flexShrink: 0,
 					}}>
 					<span style={{ fontSize: '1.4rem' }}>{duel.emoji}</span>
 					<span
@@ -293,7 +314,7 @@ export default function DuelModal() {
 					</span>
 				</div>
 
-				{/* ── START SCREEN ── */}
+				{/* START SCREEN */}
 				{!duel.started && (
 					<div
 						style={{
@@ -351,7 +372,7 @@ export default function DuelModal() {
 					</div>
 				)}
 
-				{/* ── FIGHT SCREEN ── */}
+				{/* FIGHT SCREEN */}
 				{duel.started && (
 					<div
 						style={{
@@ -361,19 +382,19 @@ export default function DuelModal() {
 							minHeight: 0,
 							overflow: 'hidden',
 						}}>
-						{/* ── Gold Player ── */}
+						{/* Gold */}
 						<PlayerPanel
-							name="ZŁOTY"
+							name={p1.name}
 							shortcut="A"
 							timer={t1}
 							active={duel.active === 1}
-							color="#D4AF37"
+							color={p1.color}
 							borderSide="right"
 							timerColor={timerColor(t1)}
 							timerGlow={timerGlow(t1)}
 						/>
 
-						{/* ── Center: Image + Answer bar + Controls ── */}
+						{/* Center */}
 						<div
 							style={{
 								display: 'flex',
@@ -384,7 +405,7 @@ export default function DuelModal() {
 								position: 'relative',
 								overflow: 'hidden',
 							}}>
-							{/* Image area */}
+							{/* Image */}
 							<div
 								style={{
 									flex: 1,
@@ -428,7 +449,7 @@ export default function DuelModal() {
 								)}
 							</div>
 
-							{/* ── Dedicated answer bar ── */}
+							{/* Answer bar */}
 							<div
 								style={{
 									width: '100%',
@@ -462,13 +483,7 @@ export default function DuelModal() {
 										fontSize: 'clamp(1.4rem, 3.5vh, 2.2rem)',
 										letterSpacing: 5,
 										fontWeight: 700,
-										color: feedback.text
-											? feedback.type === 'correct'
-												? '#ffffff'
-												: feedback.type === 'pass'
-													? '#ffffff'
-													: '#ffffff'
-											: 'rgba(255,255,255,0.18)',
+										color: '#ffffff',
 										textShadow: feedback.text
 											? feedback.type === 'correct'
 												? '0 0 30px rgba(34,197,94,0.8), 0 2px 4px rgba(0,0,0,0.8)'
@@ -476,6 +491,7 @@ export default function DuelModal() {
 													? '0 0 30px rgba(251,146,60,0.8), 0 2px 4px rgba(0,0,0,0.8)'
 													: '0 0 30px rgba(248,113,113,0.8), 0 2px 4px rgba(0,0,0,0.8)'
 											: 'none',
+										opacity: feedback.text ? 1 : 0.2,
 										transition: 'all 0.2s',
 										textAlign: 'center',
 									}}>
@@ -505,13 +521,13 @@ export default function DuelModal() {
 							</div>
 						</div>
 
-						{/* ── Silver Player ── */}
+						{/* Silver */}
 						<PlayerPanel
-							name="SREBRNY"
+							name={p2.name}
 							shortcut="D"
 							timer={t2}
 							active={duel.active === 2}
-							color="#C0C0C0"
+							color={p2.color}
 							borderSide="left"
 							timerColor={timerColor(t2)}
 							timerGlow={timerGlow(t2)}
@@ -519,7 +535,7 @@ export default function DuelModal() {
 					</div>
 				)}
 
-				{/* ── Countdown overlay ── */}
+				{/* Countdown overlay */}
 				{countdown && (
 					<div
 						style={{
@@ -538,7 +554,7 @@ export default function DuelModal() {
 								fontSize: countdown === 'START!' ? '6rem' : '10rem',
 								lineHeight: 1,
 								color: countdown === 'START!' ? '#4ade80' : countdown === '1' ? '#f97316' : '#FFD700',
-								textShadow: `0 0 100px currentColor, 0 0 40px currentColor`,
+								textShadow: '0 0 100px currentColor, 0 0 40px currentColor',
 								userSelect: 'none',
 								animation: 'countPop 0.3s ease-out',
 							}}>
@@ -547,10 +563,10 @@ export default function DuelModal() {
 					</div>
 				)}
 
-				{/* ── Winner popup ── */}
-				{winner && <WinnerOverlay winner={winner} />}
+				{/* Winner popup */}
+				{winner && <WinnerOverlay winner={winner} players={players} />}
 
-				{/* ── Close button ── */}
+				{/* Close button */}
 				<button
 					onClick={handleClose}
 					style={{
@@ -590,7 +606,16 @@ export default function DuelModal() {
 }
 
 /* ── Player Panel ── */
-interface PlayerPanelProps {
+function PlayerPanel({
+	name,
+	shortcut,
+	timer,
+	active,
+	color,
+	borderSide,
+	timerColor,
+	timerGlow,
+}: {
 	name: string
 	shortcut: string
 	timer: number
@@ -599,12 +624,8 @@ interface PlayerPanelProps {
 	borderSide: 'left' | 'right'
 	timerColor: string
 	timerGlow: string
-}
-
-function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerColor, timerGlow }: PlayerPanelProps) {
-	const isGold = color === '#D4AF37'
-	const bgActive = isGold ? 'rgba(212,175,55,0.08)' : 'rgba(192,192,192,0.06)'
-
+}) {
+	const bgActive = `${color}14`
 	return (
 		<div
 			style={{
@@ -614,14 +635,13 @@ function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerCo
 				justifyContent: 'center',
 				gap: 'clamp(8px, 2vh, 20px)',
 				padding: 'clamp(16px, 3vh, 40px) 12px',
-				borderLeft: borderSide === 'left' ? `1px solid rgba(255,255,255,0.08)` : 'none',
-				borderRight: borderSide === 'right' ? `1px solid rgba(255,255,255,0.08)` : 'none',
+				borderLeft: borderSide === 'left' ? '1px solid rgba(255,255,255,0.08)' : 'none',
+				borderRight: borderSide === 'right' ? '1px solid rgba(255,255,255,0.08)' : 'none',
 				background: active ? bgActive : 'transparent',
 				opacity: active ? 1 : 0.4,
 				transition: 'all 0.4s ease',
 				position: 'relative',
 			}}>
-			{/* Active indicator */}
 			<div
 				style={{
 					width: 8,
@@ -632,19 +652,15 @@ function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerCo
 					transition: 'all 0.3s',
 				}}
 			/>
-
-			{/* Name */}
 			<div
 				style={{
 					fontFamily: "'Bebas Neue', sans-serif",
 					fontSize: '0.95rem',
 					letterSpacing: 5,
-					color: color,
+					color,
 				}}>
 				{name}
 			</div>
-
-			{/* Timer */}
 			<div
 				style={{
 					fontFamily: "'Bebas Neue', sans-serif",
@@ -656,18 +672,9 @@ function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerCo
 				}}>
 				{timer}
 			</div>
-
-			{/* Shortcut */}
-			<div
-				style={{
-					color: 'rgba(255,255,255,0.25)',
-					fontSize: '0.7rem',
-					letterSpacing: 2,
-				}}>
+			<div style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.7rem', letterSpacing: 2 }}>
 				<kbd className="kbd">{shortcut}</kbd> poprawna
 			</div>
-
-			{/* Active side bar */}
 			{active && (
 				<div
 					style={{
@@ -687,13 +694,18 @@ function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerCo
 }
 
 /* ── Winner Overlay ── */
-function WinnerOverlay({ winner }: { winner: 1 | 2 | 'draw' }) {
+function WinnerOverlay({
+	winner,
+	players,
+}: {
+	winner: 1 | 2 | 'draw'
+	players: [{ name: string; color: string }, { name: string; color: string }]
+}) {
 	const isDraw = winner === 'draw'
-	const isGold = winner === 1
-	const color = isDraw ? '#C0C0C0' : isGold ? '#FFD700' : '#C0C0C0'
-	const label = isDraw ? 'REMIS' : isGold ? 'ZŁOTY ZWYCIĘŻA!' : 'SREBRNY ZWYCIĘŻA!'
+	const color = isDraw ? '#C0C0C0' : winner === 1 ? players[0].color : players[1].color
+	const label = isDraw ? 'REMIS' : winner === 1 ? `${players[0].name} ZWYCIĘŻA!` : `${players[1].name} ZWYCIĘŻA!`
 	const sublabel = isDraw ? 'Pole bez zmian' : 'Pole przejęte!'
-	const icon = isDraw ? '⚖️' : isGold ? '🥇' : '🥈'
+	const icon = isDraw ? '⚖️' : winner === 1 ? '🥇' : '🥈'
 
 	return (
 		<div
@@ -705,11 +717,10 @@ function WinnerOverlay({ winner }: { winner: 1 | 2 | 'draw' }) {
 				alignItems: 'center',
 				justifyContent: 'center',
 				background: 'rgba(0,0,0,0.93)',
-				borderRadius: 20,
+				borderRadius: 14,
 				zIndex: 20,
 				gap: 16,
 			}}>
-			{/* Confetti particles */}
 			{!isDraw &&
 				Array.from({ length: 16 }).map((_, i) => (
 					<div
@@ -726,7 +737,6 @@ function WinnerOverlay({ winner }: { winner: 1 | 2 | 'draw' }) {
 						}}
 					/>
 				))}
-
 			<div
 				style={{
 					display: 'flex',
@@ -747,21 +757,10 @@ function WinnerOverlay({ winner }: { winner: 1 | 2 | 'draw' }) {
 					{label}
 				</div>
 				<div
-					style={{
-						color: 'rgba(255,255,255,0.5)',
-						fontSize: '0.9rem',
-						letterSpacing: 4,
-						textTransform: 'uppercase',
-					}}>
+					style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.9rem', letterSpacing: 4, textTransform: 'uppercase' }}>
 					{sublabel}
 				</div>
-				<div
-					style={{
-						marginTop: 8,
-						color: 'rgba(255,255,255,0.2)',
-						fontSize: '0.75rem',
-						letterSpacing: 2,
-					}}>
+				<div style={{ marginTop: 8, color: 'rgba(255,255,255,0.2)', fontSize: '0.75rem', letterSpacing: 2 }}>
 					Automatyczne zamknięcie…
 				</div>
 			</div>
