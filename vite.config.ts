@@ -3,5 +3,5 @@ import { defineConfig } from 'vite'
 
 export default defineConfig(({ command }) => ({
 	plugins: [react()],
-	base: command === 'build' ? '/the-floor-app/' : '/',
+	base: '/',
 }))
