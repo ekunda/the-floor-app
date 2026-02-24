@@ -1,3 +1,68 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Montserrat:wght@400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    --gold:        #D4AF37;
+    --gold-bright: #FFD700;
+    --silver:      #C0C0C0;
+  }
+
+  *, *::before, *::after {
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    background: #000;
+    color: #fff;
+    font-family: 'Montserrat', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+}
+
+@layer components {
+  .kbd {
+    @apply inline-block bg-zinc-800 border border-zinc-600 text-zinc-300
+      text-xs px-1.5 py-0.5 rounded font-mono;
+  }
+
+  .text-gold {
+    color: var(--gold);
+  }
+  .text-silver {
+    color: var(--silver);
+  }
+  .bg-dark {
+    background: #080808;
+  }
+  .border-gold {
+    border-color: var(--gold);
+  }
+  .font-bebas {
+    font-family: 'Bebas Neue', sans-serif;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: #000; }
+::-webkit-scrollbar-thumb { background: #222; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #333; }
+
+/* Remove App.css defaults for #root */
+#root {
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+}

@@ -20,19 +20,23 @@ interface ConfigStore {
 	update: (key: keyof GameConfig, value: number) => Promise<void>
 }
 
-export const useConfigStore = create<ConfigStore>((set, get) => ({
+export const useConfigStore = create<ConfigStore>(set => ({
 	config: DEFAULTS,
 	loading: false,
 
 	fetch: async () => {
 		set({ loading: true })
-		const { data } = await supabase.from('config').select('*')
-		if (data) {
-			const merged = { ...DEFAULTS }
-			data.forEach(({ key, value }) => {
-				if (key in merged) (merged as any)[key] = Number(value)
-			})
-			set({ config: merged })
+		try {
+			const { data } = await supabase.from('config').select('*')
+			if (data && data.length > 0) {
+				const merged = { ...DEFAULTS }
+				data.forEach(({ key, value }: { key: string; value: string }) => {
+					if (key in merged) (merged as Record<string, number>)[key] = Number(value)
+				})
+				set({ config: merged })
+			}
+		} catch (e) {
+			console.warn('[Config] fallback to defaults', e)
 		}
 		set({ loading: false })
 	},

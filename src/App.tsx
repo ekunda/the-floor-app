@@ -8,7 +8,7 @@ import Game from './pages/Game'
 
 export default function App() {
 	return (
-		<BrowserRouter basename="/the-floor-app">
+		<BrowserRouter basename={import.meta.env.BASE_URL}>
 			<Routes>
 				<Route path="/" element={<Game />} />
 				<Route path="/admin" element={<Admin />} />

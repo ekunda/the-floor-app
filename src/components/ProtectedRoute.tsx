@@ -13,6 +13,11 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
 		})
 	}, [])
 
-	if (loading) return <div className="text-white p-8">Ładowanie...</div>
+	if (loading)
+		return (
+			<div className="min-h-screen bg-black flex items-center justify-center text-yellow-400 text-xl font-bebas tracking-widest">
+				Ładowanie...
+			</div>
+		)
 	return auth ? <>{children}</> : <Navigate to="/admin" />
 }
