@@ -235,7 +235,7 @@ export default function AdminConfig() {
             background: 'none', border: 'none', color: '#D4AF37', cursor: 'pointer', fontSize: '1.2rem',
           }}>☰</button>
           <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.1rem', letterSpacing: 5, color: '#D4AF37' }}>
-            THE FLOOR — ADMIN
+            THE REFLEKTOR — ADMIN
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

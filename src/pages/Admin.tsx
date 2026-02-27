@@ -56,7 +56,7 @@ export default function Admin() {
             fontSize: '2.4rem', letterSpacing: 12,
             background: 'linear-gradient(135deg, #FFD700, #C0C0C0)',
             WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
-          }}>THE FLOOR</div>
+          }}>THE </div>
           <div style={{ marginTop: 6, fontSize: '0.72rem', letterSpacing: 4, color: 'rgba(255,255,255,0.25)', textTransform: 'uppercase' }}>
             Panel administratora
           </div>
