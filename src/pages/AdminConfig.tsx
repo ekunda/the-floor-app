@@ -17,7 +17,7 @@
 //
 // SEKCJA "PRZYSZŁE FUNKCJE" — zaplanowane możliwości z opisami i etykietami statusu
 // ─────────────────────────────────────────────────────────────────────────────
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { SoundEngine } from '../lib/SoundEngine'
 import { clearSession, formatRemaining, sessionRemainingMs, supabase } from '../lib/supabase'
@@ -285,7 +285,7 @@ export default function AdminConfig() {
 
           {/* ── Content ── */}
           <main style={{ flex: 1, overflow: 'auto', padding: '20px 16px' }}>
-            <div style={{ maxWidth: 680, margin: '0 auto' }}>
+            <div style={{ maxWidth: section === 'categories' ? '100%' : 680, margin: '0 auto' }}>
 
               {/* ══ KATEGORIE ══ */}
               {section === 'categories' && (
@@ -761,12 +761,46 @@ function CategoriesSection({
   bulkProgress: number; bulkUploading: boolean; bulkDone: boolean; bulkError: string | null
   bulkRef: React.RefObject<HTMLInputElement>; handleBulkUpload: () => void
 }) {
+  const [search,  setSearch]  = useState('')
+  const [langFlt, setLangFlt] = useState<'all' | 'pl-PL' | 'en-US' | 'both'>('all')
+  const [sortCat, setSortCat] = useState<'az' | 'za' | 'newest'>('newest')
+  const [page,    setPage]    = useState(1)
+  const PAGE_SIZE = 10
+
+  // Reset page on filter change
+  useEffect(() => { setPage(1) }, [search, langFlt, sortCat])
+
+  const filtered = useMemo(() => {
+    let r = [...cats]
+    if (search.trim()) r = r.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
+    if (langFlt !== 'all') r = r.filter(c => (c.lang ?? 'pl-PL') === langFlt)
+    if (sortCat === 'az') r.sort((a, b) => a.name.localeCompare(b.name, 'pl'))
+    else if (sortCat === 'za') r.sort((a, b) => b.name.localeCompare(a.name, 'pl'))
+    // newest = default order from Supabase (created_at desc)
+    return r
+  }, [cats, search, langFlt, sortCat])
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage   = Math.min(page, totalPages)
+  const paged      = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
+
+  const highlight = (text: string) => {
+    if (!search.trim()) return <>{text}</>
+    const idx = text.toLowerCase().indexOf(search.toLowerCase())
+    if (idx === -1) return <>{text}</>
+    return <>{text.slice(0, idx)}<mark style={{ background: 'rgba(212,175,55,0.3)', color: '#fff', borderRadius: 2, padding: '0 1px' }}>{text.slice(idx, idx + search.length)}</mark>{text.slice(idx + search.length)}</>
+  }
+
   return (
     <div>
       <SectionTitle icon="📂" title="Kategorie" />
 
+      {/* ── Dwukolumnowy layout: lewa = kategorie, prawa = bulk upload ── */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr minmax(260px, 320px)', gap: 24, alignItems: 'start' }}>
+      <div>{/* LEWA KOLUMNA */}
+
       {/* Dodaj kategorię */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 20, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
         <input value={catName} onChange={e => setCatName(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && addCat()}
           placeholder="Nazwa kategorii" style={{ ...inp, flex: 1, minWidth: 140 }} />
@@ -780,10 +814,56 @@ function CategoriesSection({
         }}>DODAJ</button>
       </div>
 
+      {/* ── Toolbar ── */}
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
+        {/* Szukaj */}
+        <div style={{ position: 'relative', flex: 1, minWidth: 180 }}>
+          <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'rgba(255,255,255,0.3)', pointerEvents: 'none', fontSize: '0.85rem' }}>🔍</span>
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Szukaj kategorii…"
+            style={{ ...inp, paddingLeft: 32, paddingRight: search ? 32 : 12, fontSize: '0.85rem', padding: '8px 32px' }} />
+          {search && (
+            <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '0.9rem' }}>✕</button>
+          )}
+        </div>
+        {/* Filtr języka */}
+        {(['all','pl-PL','en-US','both'] as const).map(l => (
+          <button key={l} onClick={() => setLangFlt(l)} style={{
+            padding: '6px 11px', borderRadius: 20, cursor: 'pointer', fontSize: '0.72rem', whiteSpace: 'nowrap',
+            background: langFlt === l ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
+            border: `1px solid ${langFlt === l ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.1)'}`,
+            color: langFlt === l ? '#818cf8' : 'rgba(255,255,255,0.4)',
+          }}>{l === 'all' ? 'Wszystkie' : l === 'both' ? '🌐 Oba' : l === 'pl-PL' ? '🇵🇱 PL' : '🇺🇸 EN'}</button>
+        ))}
+        {/* Sortowanie */}
+        <select value={sortCat} onChange={e => setSortCat(e.target.value as any)} style={{
+          ...inp, width: 'auto', fontSize: '0.8rem', padding: '7px 28px 7px 10px', cursor: 'pointer',
+          appearance: 'none',
+          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='rgba(255,255,255,0.3)'/%3E%3C/svg%3E")`,
+          backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center',
+        }}>
+          <option value="newest">🕐 Najnowsze</option>
+          <option value="az">🔤 A → Z</option>
+          <option value="za">🔤 Z → A</option>
+        </select>
+      </div>
+
+      {/* Stat */}
+      <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.72rem', marginBottom: 10 }}>
+        {filtered.length === cats.length
+          ? `${cats.length} kategorii`
+          : `${filtered.length} z ${cats.length} kategorii`}
+        {totalPages > 1 && ` · strona ${safePage}/${totalPages}`}
+      </div>
+
       {/* Lista */}
       {catsLoading ? (
         <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.2)', padding: '40px 0' }}>Ładowanie…</div>
-      ) : cats.map(cat => (
+      ) : paged.length === 0 ? (
+        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.18)', padding: '32px 0', fontSize: '0.85rem', border: '1px dashed rgba(255,255,255,0.07)', borderRadius: 10 }}>
+          {cats.length === 0 ? 'Brak kategorii.' : '🔍 Brak wyników — zmień filtry.'}
+        </div>
+      ) : paged.map(cat => (
         <div key={cat.id} style={{
           padding: '12px 16px', marginBottom: 6,
           background: editing?.id === cat.id ? 'rgba(212,175,55,0.06)' : 'rgba(255,255,255,0.03)',
@@ -804,7 +884,7 @@ function CategoriesSection({
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
                 <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>{cat.emoji}</span>
-                <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cat.name}</span>
+                <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{highlight(cat.name)}</span>
                 <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 20, background: 'rgba(99,102,241,0.12)', color: 'rgba(129,140,248,0.8)', border: '1px solid rgba(99,102,241,0.2)', flexShrink: 0 }}>
                   {cat.lang ?? 'pl-PL'}
                 </span>
@@ -821,39 +901,68 @@ function CategoriesSection({
         </div>
       ))}
 
-      {cats.length === 0 && !catsLoading && (
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.18)', padding: '40px 0', fontSize: '0.9rem', letterSpacing: 2 }}>
-          Brak kategorii.
+      {/* Paginacja */}
+      {totalPages > 1 && (
+        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
+          <CatPageBtn label="‹" disabled={safePage === 1} onClick={() => setPage(p => p - 1)} />
+          {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
+            <button key={n} onClick={() => setPage(n)} style={{
+              width: 32, height: 32, borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem',
+              background: n === safePage ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.04)',
+              border: `1px solid ${n === safePage ? 'rgba(212,175,55,0.5)' : 'rgba(255,255,255,0.1)'}`,
+              color: n === safePage ? '#D4AF37' : 'rgba(255,255,255,0.5)',
+            }}>{n}</button>
+          ))}
+          <CatPageBtn label="›" disabled={safePage === totalPages} onClick={() => setPage(p => p + 1)} />
         </div>
       )}
 
-      {/* Bulk upload */}
-      <div style={{ marginTop: 28, padding: 20, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12 }}>
-        <SectionTitle icon="📤" title="Masowy upload zdjęć" />
-        <select value={bulkCatId} onChange={e => setBulkCatId(e.target.value)} style={{ ...inp, marginBottom: 10 }}>
-          <option value="">— Wybierz kategorię —</option>
-          {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
-        </select>
-        <input ref={bulkRef} type="file" accept="image/*" multiple onChange={e => setBulkFiles(Array.from(e.target.files ?? []))} style={{ ...inp, padding: '8px 10px', marginBottom: 10, cursor: 'pointer' }} />
-        {bulkFiles.length > 0 && <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem', marginBottom: 10 }}>
-          {bulkFiles.length} plików — odpowiedź = nazwa pliku (bez rozszerzenia)
-        </div>}
-        {bulkUploading && <div style={{ marginBottom: 10, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 4 }}>
-          <div style={{ height: '100%', width: `${bulkProgress}%`, background: 'linear-gradient(90deg, #D4AF37, #FFD700)', borderRadius: 4, transition: 'width .3s' }} />
-        </div>}
-        {bulkDone && <div style={{ color: '#4ade80', fontSize: '0.8rem', marginBottom: 8 }}>✓ Wysłano pomyślnie</div>}
-        {bulkError && <div style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: 8 }}>⚠️ {bulkError}</div>}
-        <button onClick={handleBulkUpload} disabled={!bulkCatId || bulkFiles.length === 0 || bulkUploading} style={{
-          width: '100%', padding: '10px 20px', borderRadius: 8,
-          background: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.06)' : 'linear-gradient(135deg, #D4AF37, #FFD700)',
-          color: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.3)' : '#000',
-          border: 'none', cursor: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'default' : 'pointer',
-          fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 3, transition: 'all 0.2s',
-        }}>
-          {bulkUploading ? `WYSYŁANIE… ${bulkProgress}%` : `📤 WYŚLIJ ${bulkFiles.length > 0 ? bulkFiles.length + ' ZDJĘĆ' : ''}`}
-        </button>
-      </div>
+      </div>{/* koniec lewej kolumny */}
+
+        {/* ── PRAWA KOLUMNA: Masowy upload ── */}
+        <div style={{ position: 'sticky', top: 16 }}>
+          <div style={{ padding: 20, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12 }}>
+            <SectionTitle icon="📤" title="Masowy upload zdjęć" />
+            <select value={bulkCatId} onChange={e => setBulkCatId(e.target.value)} style={{ ...inp, marginBottom: 10 }}>
+              <option value="">— Wybierz kategorię —</option>
+              {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+            </select>
+            <input ref={bulkRef} type="file" accept="image/*" multiple onChange={e => setBulkFiles(Array.from(e.target.files ?? []))} style={{ ...inp, padding: '8px 10px', marginBottom: 10, cursor: 'pointer' }} />
+            {bulkFiles.length > 0 && (
+              <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem', marginBottom: 10 }}>
+                {bulkFiles.length} plików — odpowiedź = nazwa pliku (bez rozszerzenia)
+              </div>
+            )}
+            {bulkUploading && (
+              <div style={{ marginBottom: 10, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 4 }}>
+                <div style={{ height: '100%', width: `${bulkProgress}%`, background: 'linear-gradient(90deg, #D4AF37, #FFD700)', borderRadius: 4, transition: 'width .3s' }} />
+              </div>
+            )}
+            {bulkDone  && <div style={{ color: '#4ade80', fontSize: '0.8rem', marginBottom: 8 }}>✓ Wysłano pomyślnie</div>}
+            {bulkError && <div style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: 8 }}>⚠️ {bulkError}</div>}
+            <button onClick={handleBulkUpload} disabled={!bulkCatId || bulkFiles.length === 0 || bulkUploading} style={{
+              width: '100%', padding: '10px 20px', borderRadius: 8,
+              background: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.06)' : 'linear-gradient(135deg, #D4AF37, #FFD700)',
+              color: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.3)' : '#000',
+              border: 'none', cursor: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'default' : 'pointer',
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 3, transition: 'all 0.2s',
+            }}>
+              {bulkUploading ? `WYSYŁANIE… ${bulkProgress}%` : `📤 WYŚLIJ ${bulkFiles.length > 0 ? bulkFiles.length + ' ZDJĘĆ' : ''}`}
+            </button>
+          </div>
+        </div>
+      </div>{/* koniec gridu */}
     </div>
+  )
+}
+
+function CatPageBtn({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      width: 32, height: 32, borderRadius: 7, cursor: disabled ? 'default' : 'pointer',
+      background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+      color: disabled ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.55)', fontSize: '1rem',
+    }}>{label}</button>
   )
 }
 
