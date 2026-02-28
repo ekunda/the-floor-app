@@ -1,76 +1,71 @@
 /**
  * Game Session Persistence
  *
- * Saves the current game state to sessionStorage so it survives page refreshes.
- * sessionStorage is tab-scoped and cleared when the browser/tab is closed —
- * perfect for a single game session.
- *
- * DuelState.usedIds is a Set<string> which isn't JSON-serializable,
- * so we convert it to/from an array on save/load.
+ * WERSJA 2 — wymuszone odrzucenie starych zapisów z błędną strukturą kafelka.
+ * Stara wersja 1 miała kafelki {index, col, row} zamiast {x, y} →
+ * canvas rysował w pozycji NaN → niewidoczne kategorie + czarny ekran.
  */
 
 import { DuelState, Tile } from '../types'
 
-const STORAGE_KEY = 'thefloor_game_v1'
-const CURRENT_VERSION = 1
+const STORAGE_KEY     = 'thefloor_game_v1'
+const CURRENT_VERSION = 2  // ← BUMP: odrzuca stare zapisy z wersji 1
 
-/** Subset of DuelState that gets persisted (questions are re-fetched from Supabase) */
+/** Subset of DuelState that gets persisted */
 export interface SavedDuel {
-  tileIdx: number
-  categoryId: string
-  categoryName: string
-  emoji: string
-  timer1: number
-  timer2: number
-  active: 1 | 2
-  paused: boolean
-  started: boolean
-  usedIds: string[]          // serialized from Set<string>
+  tileIdx:           number
+  categoryId:        string
+  categoryName:      string
+  emoji:             string
+  timer1:            number
+  timer2:            number
+  active:            1 | 2
+  paused:            boolean
+  started:           boolean
+  usedIds:           string[]
   currentQuestionId: string | null
 }
 
 export interface SavedGameState {
-  version: number
-  savedAt: number            // Date.now()
-  tiles: Tile[]              // full tile array with owner info
-  cursor: number
+  version:   number
+  savedAt:   number
+  tiles:     Tile[]
+  cursor:    number
   showStats: boolean
-  duel: SavedDuel | null
+  duel:      SavedDuel | null
 }
 
-// ── Serialize ───────────────────────────────────────────────────────────────
+// ── Serialize ─────────────────────────────────────────────────────────────────
 
 export function serializeDuel(duel: DuelState): SavedDuel {
   return {
-    tileIdx: duel.tileIdx,
-    categoryId: duel.categoryId,
-    categoryName: duel.categoryName,
-    emoji: duel.emoji,
-    timer1: duel.timer1,
-    timer2: duel.timer2,
-    active: duel.active,
-    // If duel was in fight, restore as paused so players can resume deliberately
-    paused: true,
-    started: duel.started,
-    usedIds: Array.from(duel.usedIds),
+    tileIdx:           duel.tileIdx,
+    categoryId:        duel.categoryId,
+    categoryName:      duel.categoryName,
+    emoji:             duel.emoji,
+    timer1:            duel.timer1,
+    timer2:            duel.timer2,
+    active:            duel.active,
+    paused:            true,
+    started:           duel.started,
+    usedIds:           Array.from(duel.usedIds),
     currentQuestionId: duel.currentQuestion?.id ?? null,
   }
 }
 
-// ── Save ────────────────────────────────────────────────────────────────────
+// ── Save ──────────────────────────────────────────────────────────────────────
 
 export function saveGameState(
-  tiles: Tile[],
-  cursor: number,
+  tiles:     Tile[],
+  cursor:    number,
   showStats: boolean,
-  duel: DuelState | null,
+  duel:      DuelState | null,
 ): void {
-  // Don't save if game hasn't started yet (no tiles)
   if (tiles.length === 0) return
 
   const state: SavedGameState = {
-    version: CURRENT_VERSION,
-    savedAt: Date.now(),
+    version:   CURRENT_VERSION,
+    savedAt:   Date.now(),
     tiles,
     cursor,
     showStats,
@@ -84,7 +79,7 @@ export function saveGameState(
   }
 }
 
-// ── Load ────────────────────────────────────────────────────────────────────
+// ── Load ──────────────────────────────────────────────────────────────────────
 
 export function loadGameState(): SavedGameState | null {
   try {
@@ -93,14 +88,26 @@ export function loadGameState(): SavedGameState | null {
 
     const parsed: SavedGameState = JSON.parse(raw)
 
-    // Version check — discard stale/incompatible saves
+    // Odrzuć stare/niezgodne zapisy (wersja 1 miała błędną strukturę Tile)
     if (parsed.version !== CURRENT_VERSION) {
       clearGameState()
       return null
     }
 
-    // Discard saves older than 24 hours
+    // Odrzuć zapisy starsze niż 24h
     if (Date.now() - parsed.savedAt > 24 * 60 * 60 * 1000) {
+      clearGameState()
+      return null
+    }
+
+    // Dodatkowa walidacja — upewnij się, że kafelki mają poprawną strukturę {x, y}
+    const firstTile = parsed.tiles?.[0]
+    if (
+      !firstTile ||
+      typeof firstTile.x !== 'number' ||
+      typeof firstTile.y !== 'number' ||
+      (firstTile.owner !== 'gold' && firstTile.owner !== 'silver')
+    ) {
       clearGameState()
       return null
     }
@@ -111,13 +118,13 @@ export function loadGameState(): SavedGameState | null {
   }
 }
 
-// ── Check ───────────────────────────────────────────────────────────────────
+// ── Check ─────────────────────────────────────────────────────────────────────
 
 export function hasGameState(): boolean {
   return loadGameState() !== null
 }
 
-// ── Clear ───────────────────────────────────────────────────────────────────
+// ── Clear ─────────────────────────────────────────────────────────────────────
 
 export function clearGameState(): void {
   try {

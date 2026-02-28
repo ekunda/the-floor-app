@@ -1,7 +1,16 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// useGameStore.ts — Stan gry
+//
+// Zmiany:
+//   - DuelState.passCount: licznik pasów per-duel (dla MAX_PASSES)
+//   - pass() inkrementuje passCount
+//   - startChallenge() inicjalizuje passCount: 0
+//   - restoreSession() przywraca passCount
+// ─────────────────────────────────────────────────────────────────────────────
 import { create } from 'zustand'
-import { supabase } from '../lib/supabase'
+import { getCached, setCached, supabase } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
-import { Category, DuelState, GameStats, Question, SpeechLang, Tile, TileOwner } from '../types'
+import { Category, DuelState, GameStats, Question, Tile, TileOwner } from '../types'
 import { BOARD_PRESETS, useConfigStore } from './useConfigStore'
 
 export const CATEGORY_EMOJI: Record<string, string> = {
@@ -40,41 +49,12 @@ export function computeStats(tiles: Tile[]): GameStats {
   }
 }
 
-interface GameStore {
-  categories: (Category & { questions: Question[] })[]
-  tiles: Tile[]
-  cursor: number
-  duel: DuelState | null
-  blockInput: boolean
-  toastText: string
-  toastTimer: ReturnType<typeof setTimeout> | null
-  showStats: boolean
-
-  loadCategories: () => Promise<void>
-  restoreSession: () => Promise<boolean>
-  newGame: () => void
-  setCursor: (idx: number) => void
-  moveCursor: (dir: 'up' | 'down' | 'left' | 'right') => void
-  startChallenge: () => void
-  startFight: () => void
-  markCorrect: (playerNum: 1 | 2) => void
-  pass: () => void
-  togglePause: () => void
-  closeDuel: () => void
-  showToast: (text: string) => void
-  toggleStats: () => void
-  tick: () => void
-  nextQuestion: () => Question | null
-  endDuelWithWinner: (winnerNum: 1 | 2) => void
-  endDuelDraw: () => void
-}
-
-
-// Normalize questions loaded from Supabase — ensures synonyms is always string[]
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })[] {
   return cats.map(cat => ({
     ...cat,
     lang: cat.lang ?? 'pl-PL',
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     questions: (cat.questions ?? []).map((q: any) => ({
       ...q,
       synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
@@ -82,115 +62,154 @@ function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })
   }))
 }
 
+interface GameStore {
+  categories: (Category & { questions: Question[] })[]
+  tiles:      Tile[]
+  cursor:     number
+  duel:       DuelState | null
+  blockInput: boolean
+  toastText:  string
+  toastTimer: ReturnType<typeof setTimeout> | null
+  showStats:  boolean
+
+  loadCategories:    () => Promise<void>
+  restoreSession:    () => Promise<boolean>
+  newGame:           () => void
+  setCursor:         (idx: number) => void
+  moveCursor:        (dir: 'up' | 'down' | 'left' | 'right') => void
+  startChallenge:    () => void
+  startFight:        () => void
+  markCorrect:       (playerNum: 1 | 2) => void
+  pass:              () => void
+  togglePause:       () => void
+  closeDuel:         () => void
+  showToast:         (text: string) => void
+  toggleStats:       () => void
+  tick:              () => void
+  nextQuestion:      () => Question | null
+  endDuelWithWinner: (winnerNum: 1 | 2) => void
+  endDuelDraw:       () => void
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// ANTI-DOUBLE-PASS — module-level locks (synchroniczne, poza React state)
+// ═════════════════════════════════════════════════════════════════════════════
+let _passLock    = false
+let _correctLock = false
+let _lastPassedQuestionId: string | null = null
+let _lastPassTime = 0
+const PASS_DEBOUNCE_MS = 700
+
+function resetPassLocks() {
+  _passLock             = false
+  _lastPassedQuestionId = null
+  _lastPassTime         = 0
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Cache
+// ─────────────────────────────────────────────────────────────────────────────
+const CACHE_KEY_CATS = 'categories_all'
+const CACHE_TTL_CATS = 10 * 60 * 1000
+
+const queryCats = () =>
+  supabase
+    .from('categories')
+    .select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)')
+    .order('created_at')
+
 export const useGameStore = create<GameStore>((set, get) => ({
   categories: [],
-  tiles: [],
-  cursor: 5,
-  duel: null,
+  tiles:      [],
+  cursor:     5,
+  duel:       null,
   blockInput: false,
-  toastText: '',
+  toastText:  '',
   toastTimer: null,
-  showStats: true,
+  showStats:  true,
 
   loadCategories: async () => {
-    const { data: cats } = await supabase
-      .from('categories').select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at')
-    const full = normalizeQuestions(cats ?? [])
-    set({ categories: full })
-
-    const cfg = useConfigStore.getState().config
-    set({ showStats: cfg.SHOW_STATS === 1 })
-
-    get().newGame()
+    const cached = getCached<unknown[]>(CACHE_KEY_CATS, CACHE_TTL_CATS)
+    if (cached) {
+      const full = normalizeQuestions(cached)
+      set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
+      get().newGame()
+    }
+    const { data: cats } = await queryCats()
+    if (cats) {
+      setCached(CACHE_KEY_CATS, cats, CACHE_TTL_CATS)
+      const full = normalizeQuestions(cats)
+      set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
+      get().newGame()
+    }
   },
 
   restoreSession: async () => {
     const saved = loadGameState()
     if (!saved) return false
-
-    // Load fresh categories & config from Supabase
-    const [{ data: cats }] = await Promise.all([
-      supabase.from('categories').select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)').order('created_at'),
-      useConfigStore.getState().fetch(),
-    ])
+    const [{ data: cats }] = await Promise.all([queryCats(), useConfigStore.getState().fetch()])
     const categories = normalizeQuestions(cats ?? [])
-    set({ categories })
+    if (cats) setCached(CACHE_KEY_CATS, cats, CACHE_TTL_CATS)
+    set({ categories, tiles: saved.tiles, cursor: saved.cursor, showStats: saved.showStats })
 
-    // Restore board state (tile owners preserved from save)
-    set({ tiles: saved.tiles, cursor: saved.cursor, showStats: saved.showStats })
-
-    // Restore duel if one was open
     if (saved.duel) {
-      const sd = saved.duel
+      const sd  = saved.duel
       const cat = categories.find(c => c.id === sd.categoryId)
       const questions = cat?.questions ?? []
-
-      const currentQuestion = sd.currentQuestionId
-        ? (questions.find(q => q.id === sd.currentQuestionId) ?? questions[0] ?? null)
-        : null
-
-      const restoredDuel: DuelState = {
-        tileIdx: sd.tileIdx,
-        categoryId: sd.categoryId,
-        categoryName: sd.categoryName,
-        emoji: sd.emoji,
-        lang: cat?.lang ?? 'pl-PL',
-        questions,
-        usedIds: new Set(sd.usedIds),
-        timer1: sd.timer1,
-        timer2: sd.timer2,
-        active: sd.active,
-        paused: true,   // always restore as paused — player resumes deliberately
-        started: sd.started,
-        currentQuestion: sd.started ? currentQuestion : null,
-      }
-
-      set({ duel: restoredDuel })
+      set({
+        duel: {
+          tileIdx:         sd.tileIdx,
+          categoryId:      sd.categoryId,
+          categoryName:    sd.categoryName,
+          emoji:           sd.emoji,
+          lang:            cat?.lang ?? 'pl-PL',
+          questions,
+          usedIds:         new Set(sd.usedIds),
+          timer1:          sd.timer1,
+          timer2:          sd.timer2,
+          active:          sd.active,
+          paused:          true,
+          started:         sd.started,
+          passCount:       (sd as { passCount?: number }).passCount ?? 0,
+          currentQuestion: sd.started
+            ? (sd.currentQuestionId ? (questions.find(q => q.id === sd.currentQuestionId) ?? null) : null)
+            : null,
+        },
+      })
     }
-
     return true
   },
 
   newGame: () => {
     const { categories } = get()
-    const cfg = useConfigStore.getState().config
+    const cfg            = useConfigStore.getState().config
     const { tileCategories } = useConfigStore.getState()
-
     const preset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const cols = preset.cols
-    const rows = preset.rows
-    const total = cols * rows
+    const { cols, rows } = preset
+    const total  = cols * rows
 
-    let catList: (Category & { questions: Question[] } | undefined)[]
-
-    const hasTileMap = tileCategories.length >= total &&
-                       tileCategories.some(id => id !== '')
+    let catList: ((Category & { questions: Question[] }) | undefined)[]
+    const hasTileMap = tileCategories.length >= total && tileCategories.some(id => id !== '')
 
     if (hasTileMap && cfg.RANDOM_TILES !== 1) {
-      catList = tileCategories.slice(0, total).map(catId =>
-        catId ? categories.find(c => c.id === catId) : undefined
-      )
+      catList = tileCategories.slice(0, total).map(catId => catId ? categories.find(c => c.id === catId) : undefined)
     } else if (cfg.RANDOM_TILES === 1 && categories.length > 0) {
       const pool = shuffle(categories)
       catList = Array.from({ length: total }, (_, i) => pool[i % pool.length])
     } else {
-      catList = Array.from({ length: total }, (_, i) =>
-        categories[i % Math.max(categories.length, 1)]
-      )
+      catList = Array.from({ length: total }, (_, i) => categories[i % Math.max(categories.length, 1)])
     }
 
     const tiles: Tile[] = catList.map((cat, i) => {
       const x = i % cols
       const y = Math.floor(i / cols)
-      const owner: TileOwner = x < cols / 2 ? 'gold' : 'silver'
-      return { x, y, categoryId: cat?.id ?? '', categoryName: cat?.name ?? 'Kategoria', owner }
+      return { x, y, categoryId: cat?.id ?? '', categoryName: cat?.name ?? 'Kategoria', owner: (x < cols / 2 ? 'gold' : 'silver') as TileOwner }
     })
 
     const wasEmpty = get().tiles.length === 0
     set({ tiles, cursor: Math.floor(total / 2) - 1, duel: null })
     if (!wasEmpty) get().showToast('🎮 Nowa gra!')
-
-    // Clear saved state when explicitly starting a new game
+    resetPassLocks(); _correctLock = false
     clearGameState()
   },
 
@@ -198,11 +217,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   moveCursor: dir => {
     const { cursor } = get()
-    const cfg = useConfigStore.getState().config
-    const preset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const { cols, rows } = preset
-    const total = cols * rows
-    let next = cursor
+    const preset = BOARD_PRESETS[useConfigStore.getState().config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
+    const { cols } = preset
+    const total    = cols * preset.rows
+    let next       = cursor
     if (dir === 'up')    next = cursor - cols
     if (dir === 'down')  next = cursor + cols
     if (dir === 'left')  next = cursor - 1
@@ -215,27 +233,21 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (duel) return
     const tile = tiles[cursor]
     if (!tile) return
-
-    const cat = categories.find(c => c.id === tile.categoryId)
+    const cat       = categories.find(c => c.id === tile.categoryId)
     const questions = cat?.questions ?? []
-
-    if (questions.length === 0) {
-      get().showToast('❌ Brak pytań w tej kategorii')
-      return
-    }
-
+    if (questions.length === 0) { get().showToast('❌ Brak pytań w tej kategorii'); return }
     const cfg = useConfigStore.getState().config
     set({
       duel: {
-        tileIdx: cursor, categoryId: tile.categoryId,
-        categoryName: tile.categoryName,
-        emoji: getCatEmoji(tile.categoryName, cat?.emoji),
-        lang: cat?.lang ?? 'pl-PL',
+        tileIdx: cursor, categoryId: tile.categoryId, categoryName: tile.categoryName,
+        emoji: getCatEmoji(tile.categoryName, cat?.emoji), lang: cat?.lang ?? 'pl-PL',
         questions, usedIds: new Set(),
         timer1: cfg.DUEL_TIME, timer2: cfg.DUEL_TIME,
         active: 1, paused: false, started: false, currentQuestion: null,
+        passCount: 0,
       },
     })
+    resetPassLocks(); _correctLock = false
   },
 
   startFight: () => {
@@ -247,61 +259,80 @@ export const useGameStore = create<GameStore>((set, get) => ({
   tick: () => {
     const { duel } = get()
     if (!duel?.started || duel.paused) return
-    const key = duel.active === 1 ? 'timer1' : 'timer2'
+    const key    = duel.active === 1 ? 'timer1' : 'timer2'
     const newVal = Math.max(0, duel[key] - 1)
-    const updated: DuelState = { ...duel, [key]: newVal }
+    const updated = { ...duel, [key]: newVal }
     set({ duel: updated })
     if (newVal <= 0) set({ duel: { ...updated, paused: true } })
   },
 
-  markCorrect: playerNum => {
+  markCorrect: (playerNum) => {
+    if (_correctLock) return
     const { duel, blockInput } = get()
     if (!duel?.started || blockInput) return
     if (duel.active !== playerNum) return
+    _correctLock = true
     set({ blockInput: true })
     const cfg = useConfigStore.getState().config
     setTimeout(() => {
-      const { duel } = get()
-      if (!duel) return
-      const next = (playerNum === 1 ? 2 : 1) as 1 | 2
+      _correctLock = false
+      const { duel: d } = get()
+      if (!d) return
       const q = get().nextQuestion()
-      set({ blockInput: false, duel: { ...duel, active: next, currentQuestion: q } })
+      _lastPassedQuestionId = null
+      set({ blockInput: false, duel: { ...d, active: (playerNum === 1 ? 2 : 1) as 1 | 2, currentQuestion: q } })
     }, cfg.FEEDBACK_MS)
   },
 
+  // ── pass — 4-warstwowy system + passCount tracking ────────────────────────
   pass: () => {
+    if (_passLock) return
     const { duel, blockInput } = get()
     if (!duel?.started || blockInput) return
+    const currentQId = duel.currentQuestion?.id ?? 'no-question'
+    const now        = Date.now()
+    if (_lastPassedQuestionId === currentQId) return
+    if (now - _lastPassTime < PASS_DEBOUNCE_MS) return
+
+    _passLock             = true
+    _lastPassedQuestionId = currentQId
+    _lastPassTime         = now
     set({ blockInput: true })
-    const cfg = useConfigStore.getState().config
-    const key = duel.active === 1 ? 'timer1' : 'timer2'
+
+    const cfg    = useConfigStore.getState().config
+    const key    = duel.active === 1 ? 'timer1' : 'timer2'
     const newVal = Math.max(0, duel[key] - cfg.PASS_PENALTY)
-    set({ duel: { ...duel, [key]: newVal } })
+    // Inkrementuj passCount
+    set({ duel: { ...duel, [key]: newVal, passCount: (duel.passCount ?? 0) + 1 } })
+
     setTimeout(() => {
+      _passLock = false
       set({ blockInput: false })
-      const { duel } = get()
-      if (!duel) return
+      const { duel: d } = get()
+      if (!d) return
       const q = get().nextQuestion()
-      set({ duel: { ...duel, currentQuestion: q } })
+      _lastPassedQuestionId = null
+      set({ duel: { ...d, currentQuestion: q } })
     }, cfg.FEEDBACK_MS)
   },
 
   togglePause: () => {
     const { duel } = get()
     if (!duel?.started) return
-    const wasPaused = duel.paused
-    set({ duel: { ...duel, paused: !wasPaused } })
-    get().showToast(wasPaused ? '▶ Wznowiono' : '⏸ Pauza')
+    set({ duel: { ...duel, paused: !duel.paused } })
+    get().showToast(duel.paused ? '▶ Wznowiono' : '⏸ Pauza')
   },
 
-  closeDuel: () => set({ duel: null, blockInput: false }),
+  closeDuel: () => {
+    resetPassLocks(); _correctLock = false
+    set({ duel: null, blockInput: false })
+  },
 
-  showToast: text => {
+  showToast: (text) => {
     const { toastTimer } = get()
     if (toastTimer) clearTimeout(toastTimer)
     const cfg = useConfigStore.getState().config
-    const t = setTimeout(() => set({ toastText: '' }), cfg.TOAST_MS)
-    set({ toastText: text, toastTimer: t })
+    set({ toastText: text, toastTimer: setTimeout(() => set({ toastText: '' }), cfg.TOAST_MS) })
   },
 
   toggleStats: () => set(s => ({ showStats: !s.showStats })),
@@ -311,22 +342,17 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!duel) return null
     const { questions, usedIds } = duel
     if (usedIds.size >= questions.length) usedIds.clear()
-    let q: Question | undefined
-    let attempts = 0
-    do {
-      q = questions[Math.floor(Math.random() * questions.length)]
-      attempts++
-    } while (usedIds.has(q?.id ?? '') && attempts < questions.length * 3)
+    let q: Question | undefined, attempts = 0
+    do { q = questions[Math.floor(Math.random() * questions.length)]; attempts++ }
+    while (usedIds.has(q?.id ?? '') && attempts < questions.length * 3)
     if (q) usedIds.add(q.id)
     return q ?? null
   },
 
-  endDuelWithWinner: winnerNum => {
+  endDuelWithWinner: (winnerNum) => {
     const { tiles, duel } = get()
     if (!duel) return
-    const owner: TileOwner = winnerNum === 1 ? 'gold' : 'silver'
-    const newTiles = tiles.map((t, i) => (i === duel.tileIdx ? { ...t, owner } : t))
-    set({ tiles: newTiles, duel: { ...duel, paused: true } })
+    set({ tiles: tiles.map((t, i) => i === duel.tileIdx ? { ...t, owner: (winnerNum === 1 ? 'gold' : 'silver') as TileOwner } : t), duel: { ...duel, paused: true } })
   },
 
   endDuelDraw: () => {
@@ -336,15 +362,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 }))
 
-// ── Auto-save subscriber ─────────────────────────────────────────────────────
-// Debounced 400ms — avoids too many writes during rapid state changes (e.g. tick).
-let saveTimer: ReturnType<typeof setTimeout> | null = null
-
+// ── Auto-save (debounced 400ms) ───────────────────────────────────────────────
+let _saveTimer: ReturnType<typeof setTimeout> | null = null
 useGameStore.subscribe(state => {
-  if (state.tiles.length === 0) return  // game not started yet, nothing to save
-
-  if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(() => {
+  if (state.tiles.length === 0) return
+  if (_saveTimer) clearTimeout(_saveTimer)
+  _saveTimer = setTimeout(() => {
     saveGameState(state.tiles, state.cursor, state.showStats, state.duel)
   }, 400)
 })

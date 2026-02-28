@@ -1,12 +1,31 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// DuelModal.tsx — Modal pojedynku
+//
+// KLUCZOWA NAPRAWA PODWÓJNEGO PASA:
+//   Problem: "pas" wykrywany ZARÓWNO w interim JAK I final wynikach rozpoznawania.
+//   Chrome wysyła: interim:"pa" → interim:"pas" → final:"pas"
+//   Po interim "pas" → pytanie zmienia się po FEEDBACK_MS → nowy questionId
+//   → final "pas" trafia na NOWE pytanie → drugi pas się wykonuje.
+//
+//   Rozwiązanie: tryVoiceMatch(transcript, isFinal)
+//   isPassCommand() wywoływane TYLKO gdy isFinal === true.
+//   Interim sprawdza TYLKO odpowiedzi (time-sensitive), nigdy pas.
+//
+// NOWE FUNKCJE:
+//   - config.VOICE_PASS = 0 → głosowy pas wyłączony całkowicie
+//   - config.MAX_PASSES = N → limit pasów, po N pasach forfeit
+//   - config.SHOW_ANSWER_HINT = 1 → pierwsza litera po 10s braku aktywności
+// ─────────────────────────────────────────────────────────────────────────────
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { SoundEngine } from '../lib/SoundEngine'
-import { isAnswerMatch, isPassCommand, isSpeechRecognitionSupported, useSpeechRecognition } from '../lib/useSpeechRecognition'
+import { buildMatchData, isAnswerMatchFast, isPassCommand, isSpeechRecognitionSupported, useSpeechRecognition } from '../lib/useSpeechRecognition'
+import type { MatchData } from '../lib/useSpeechRecognition'
 import { supabase } from '../lib/supabase'
 import { useConfigStore } from '../store/useConfigStore'
 import { useGameStore } from '../store/useGameStore'
 
-type FeedbackType = 'correct' | 'pass' | 'timeout' | 'voice' | ''
-type WinnerNum = 1 | 2 | 'draw' | null
+type FeedbackType = 'correct' | 'pass' | 'timeout' | 'voice' | 'forfeit' | ''
+type WinnerNum    = 1 | 2 | 'draw' | null
 
 export default function DuelModal() {
   const duel              = useGameStore(s => s.duel)
@@ -24,170 +43,206 @@ export default function DuelModal() {
   const [imageUrl, setImageUrl]           = useState<string>('')
   const [feedback, setFeedback]           = useState<{ text: string; type: FeedbackType }>({ text: '', type: '' })
   const [winner, setWinner]               = useState<WinnerNum>(null)
-  const [intervalId, setIntervalId]       = useState<ReturnType<typeof setInterval> | null>(null)
   const [speechEnabled, setSpeechEnabled] = useState(false)
-  // lang comes from duel.lang (set per-category in admin panel)
-
+  const [hintLetter, setHintLetter]       = useState<string | null>(null)
 
   const speechSupported = isSpeechRecognitionSupported()
+  const voicePassEnabled = config.VOICE_PASS !== 0
+  const maxPasses = config.MAX_PASSES ?? 0
 
-  // ── Stable refs for use inside callbacks ─────────────────────────────────
-  const feedbackTimer     = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const winnerTimer       = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const winnerHandled     = useRef(false)
-  const countdownTimeouts = useRef<ReturnType<typeof setTimeout>[]>([])
+  // ── Interval jako REF (nie state — eliminuje stale closure) ───────────────
+  const intervalIdRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // ── Stable refs ───────────────────────────────────────────────────────────
+  const feedbackTimer      = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const winnerTimer        = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hintTimer          = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const winnerHandled      = useRef(false)
+  const countdownTimeouts  = useRef<ReturnType<typeof setTimeout>[]>([])
+
   const duelRef           = useRef(duel)
   const blockRef          = useRef(blockInput)
   const countdownRef      = useRef(countdown)
+  const activePlayerRef   = useRef<1 | 2>(1)
+  const voicePassRef      = useRef(voicePassEnabled)
 
-  // ── Current question data — dedicated refs updated on question change ─────
-  // This guarantees speech callbacks always have fresh answer + synonyms
-  // regardless of Zustand spread/copy behavior
-  const currentAnswerRef   = useRef<string>('')
-  const currentSynonymsRef = useRef<string[]>([])
-  const activePlayerRef    = useRef<1 | 2>(1)
+  // OPTYMALIZACJA: pre-obliczone dane pytania (normalized + regex cache)
+  // Obliczane RAZ przy zmianie pytania, nie przy każdym zdarzeniu mowy
+  const matchDataRef       = useRef<MatchData | null>(null)
+  const updateGrammarRef   = useRef<((a: string, s?: string[]) => void) | null>(null)
 
-  // ── Action refs — updated every render, called from speech callbacks ──────
   const handlePassRef    = useRef<() => void>(() => {})
-  const handleCorrectRef = useRef<(playerNum: 1 | 2, fromVoice?: boolean) => void>(() => {})
+  const handleCorrectRef = useRef<(p: 1 | 2, fromVoice?: boolean) => void>(() => {})
+  const handleCloseRef   = useRef<() => void>(() => {})
 
-  // ── Per-question anti-double-fire: track ID, not time ───────────────────
-  // Resets automatically when question changes — no blocking on next question
   const matchedQuestionIdRef = useRef<string | null>(null)
   const passedQuestionIdRef  = useRef<string | null>(null)
+  const prevActiveTimerRef   = useRef<number | null>(null)
+  const pasDebounceTimer     = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  // Keep refs fresh on every render
-  duelRef.current       = duel
-  blockRef.current      = blockInput
-  countdownRef.current  = countdown
+  // Aktualizuj refs co render
+  duelRef.current         = duel
+  blockRef.current        = blockInput
+  countdownRef.current    = countdown
   activePlayerRef.current = duel?.active ?? 1
-
-  // ── Update answer/synonyms whenever question changes ─────────────────────
-  useEffect(() => {
-    const q = duel?.currentQuestion
-    currentAnswerRef.current   = q?.answer ?? ''
-    currentSynonymsRef.current = Array.isArray(q?.synonyms) ? q!.synonyms : []
-    matchedQuestionIdRef.current = null  // allow matching on new question
-    passedQuestionIdRef.current  = null
-  }, [duel?.currentQuestion?.id])
+  voicePassRef.current    = voicePassEnabled
 
   const isOpen = !!duel
+  const vol = (base: number) => base  // SoundEngine używa wewnętrznie SFX_VOLUME
 
-  /* ── Stop bgMusic when modal opens ── */
+  // ── Reset + pre-obliczanie danych pytania ─────────────────────────────────
+  useEffect(() => {
+    const q = duel?.currentQuestion
+    const answer   = q?.answer ?? ''
+    const synonyms = Array.isArray(q?.synonyms) ? q!.synonyms : []
+
+    // Pre-oblicz normalized phrases + skompiluj regexy — RAZ na zmianę pytania
+    matchDataRef.current = answer ? buildMatchData(answer, synonyms) : null
+
+    // Zaktualizuj gramatykę w recognition (poprawia trafność Chrome ASR)
+    if (answer && updateGrammarRef.current) {
+      updateGrammarRef.current(answer, synonyms)
+    }
+
+    matchedQuestionIdRef.current = null
+    passedQuestionIdRef.current  = null
+    setHintLetter(null)
+
+    if (hintTimer.current) clearTimeout(hintTimer.current)
+    if (config.SHOW_ANSWER_HINT === 1 && q?.answer) {
+      hintTimer.current = setTimeout(() => {
+        setHintLetter(q.answer[0]?.toUpperCase() ?? null)
+      }, 10000)
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duel?.currentQuestion?.id])
+
   useEffect(() => {
     if (isOpen) SoundEngine.stopBg(600)
   }, [isOpen])
 
-  const volumeFactor = (base: number) => base * (config.SOUND_VOLUME / 100)
-
-  /* ── Resolve image URL ── */
-  const resolveImageUrl = useCallback((path: string | null | undefined): string => {
-    if (!path) return ''
-    return supabase.storage.from('question-images').getPublicUrl(path).data.publicUrl
-  }, [])
-
-  /* ── Update image when question changes ── */
+  // ── Beepy timera 3·2·1 ───────────────────────────────────────────────────
   useEffect(() => {
-    if (!duel?.currentQuestion) { setImageUrl(''); return }
-    setImageUrl(resolveImageUrl(duel.currentQuestion.image_path))
-  }, [duel?.currentQuestion?.id, resolveImageUrl])
+    if (!duel?.started || duel.paused || countdown) {
+      prevActiveTimerRef.current = null
+      return
+    }
+    const activeTimer = duel.active === 1 ? duel.timer1 : duel.timer2
+    const prev        = prevActiveTimerRef.current
+    prevActiveTimerRef.current = activeTimer
+    if (prev !== null && activeTimer < prev && activeTimer >= 1 && activeTimer <= 3) {
+      SoundEngine.timerBeep(activeTimer as 1 | 2 | 3, vol(1))
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duel?.timer1, duel?.timer2, duel?.active, duel?.started, duel?.paused, countdown])
 
-  /* ── Ticker ── */
+  // ── Image URL ─────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!duel?.currentQuestion?.image_path) { setImageUrl(''); return }
+    const { data } = supabase.storage
+      .from('question-images')
+      .getPublicUrl(duel.currentQuestion.image_path)
+    setImageUrl(data.publicUrl)
+  }, [duel?.currentQuestion?.id])
+
+  // ── Ticker ────────────────────────────────────────────────────────────────
   useEffect(() => {
     const shouldRun = duel?.started && !duel.paused
     if (!shouldRun) {
-      if (intervalId) { clearInterval(intervalId); setIntervalId(null) }
+      if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
       return
     }
-    if (intervalId) return
-    const tick = useGameStore.getState().tick
-    const id = setInterval(tick, 1000)
-    setIntervalId(id)
-    return () => { clearInterval(id); setIntervalId(null) }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (intervalIdRef.current) return
+    intervalIdRef.current = setInterval(useGameStore.getState().tick, 1000)
+    return () => {
+      if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel?.started, duel?.paused])
 
-  /* ── Timer expiry ── */
+  // ── Koniec timera ─────────────────────────────────────────────────────────
   useEffect(() => {
     const d = duel
     if (!d?.started || !d.paused || winnerHandled.current) return
     if (d.timer1 > 0 && d.timer2 > 0) return
-    if (intervalId) { clearInterval(intervalId); setIntervalId(null) }
+    if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
+
     winnerHandled.current = true
     showFeedback('⏰ Czas minął!', 'timeout')
+
     winnerTimer.current = setTimeout(() => {
       const p1Lost = d.timer1 <= 0
       const p2Lost = d.timer2 <= 0
-      if (p1Lost && p2Lost) {
-        setWinner('draw'); endDuelDraw()
-        SoundEngine.play('applause', volumeFactor(0.6))
-        winnerTimer.current = setTimeout(handleClose, config.WIN_CLOSE_MS)
-      } else {
+      if (p1Lost && p2Lost) { setWinner('draw'); endDuelDraw(); SoundEngine.play('applause', vol(0.6)) }
+      else {
         const w: 1 | 2 = p1Lost ? 2 : 1
-        setWinner(w); endDuelWithWinner(w)
-        SoundEngine.play('applause', volumeFactor(0.9))
-        winnerTimer.current = setTimeout(handleClose, config.WIN_CLOSE_MS)
+        setWinner(w); endDuelWithWinner(w); SoundEngine.play('applause', vol(0.9))
       }
+      winnerTimer.current = setTimeout(() => handleCloseRef.current(), config.WIN_CLOSE_MS)
     }, 1200)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel?.timer1, duel?.timer2, duel?.paused])
 
-  /* ── Cleanup on close ── */
+  // ── Cleanup gdy modal zamknięty ───────────────────────────────────────────
   useEffect(() => {
     if (!duel) {
-      if (intervalId) { clearInterval(intervalId); setIntervalId(null) }
-      setCountdown(null); setFeedback({ text: '', type: '' })
-      setWinner(null); setImageUrl('')
-      winnerHandled.current    = false
-      matchedQuestionIdRef.current = null
-      passedQuestionIdRef.current  = null
+      if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
+      if (hintTimer.current) { clearTimeout(hintTimer.current); hintTimer.current = null }
+      if (pasDebounceTimer.current) { clearTimeout(pasDebounceTimer.current); pasDebounceTimer.current = null }
+      setCountdown(null); setFeedback({ text: '', type: '' }); setWinner(null)
+      setImageUrl(''); setHintLetter(null)
+      winnerHandled.current = false
+      matchedQuestionIdRef.current = passedQuestionIdRef.current = null
+      prevActiveTimerRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel])
 
-  /* ── Cancel countdown ── */
   const cancelCountdown = useCallback(() => {
-    countdownTimeouts.current.forEach(id => clearTimeout(id))
+    countdownTimeouts.current.forEach(clearTimeout)
     countdownTimeouts.current = []
     setCountdown(null)
   }, [])
 
-  /* ── Countdown animation ── */
+  const showFeedback = (text: string, type: FeedbackType) => {
+    if (hintTimer.current) clearTimeout(hintTimer.current)
+    setHintLetter(null)
+    setFeedback({ text, type })
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
+    feedbackTimer.current = setTimeout(
+      () => setFeedback({ text: '', type: '' }),
+      config.FEEDBACK_MS + 300,
+    )
+  }
+
   const runCountdown = useCallback(() => {
-    SoundEngine.play('countdown', volumeFactor(0.85))
-    const steps = [
-      { label: '3', delay: 0 }, { label: '2', delay: 1000 },
-      { label: '1', delay: 2000 }, { label: 'START!', delay: 3000 },
-    ]
-    steps.forEach(({ label, delay }) => {
+    SoundEngine.play('countdown', vol(0.85))
+    ;[
+      { label: '3', delay: 0    },
+      { label: '2', delay: 1000 },
+      { label: '1', delay: 2000 },
+      { label: 'START!', delay: 3000 },
+    ].forEach(({ label, delay }) => {
       const id = setTimeout(() => setCountdown(label), delay)
       countdownTimeouts.current.push(id)
     })
     const finalId = setTimeout(() => {
       setCountdown(null)
       countdownTimeouts.current = []
+      prevActiveTimerRef.current = null
       const q = nextQuestion()
       useGameStore.setState(s => ({
         duel: s.duel ? { ...s.duel, paused: false, currentQuestion: q } : null,
       }))
-      SoundEngine.startBg('duelMusic', volumeFactor(0.22))
+      SoundEngine.startBg('duelMusic', vol(0.22))
     }, 4300)
     countdownTimeouts.current.push(finalId)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nextQuestion, config.SOUND_VOLUME])
-
-  /* ── Feedback banner ── */
-  const showFeedback = (text: string, type: FeedbackType) => {
-    setFeedback({ text, type })
-    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
-    feedbackTimer.current = setTimeout(
-      () => setFeedback({ text: '', type: '' }),
-      config.FEEDBACK_MS + 300
-    )
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextQuestion])
 
   const handleStartFight = () => {
     startFight()
+    SoundEngine.unlockAudio().catch(() => {})
     setTimeout(runCountdown, 50)
   }
 
@@ -195,93 +250,134 @@ export default function DuelModal() {
     if (!duelRef.current?.started || blockRef.current || countdownRef.current) return
     if (duelRef.current.active !== playerNum) return
     const ans = duelRef.current.currentQuestion?.answer ?? '???'
-    SoundEngine.play('correct', volumeFactor(0.75))
+    SoundEngine.play('correct', vol(0.75))
     showFeedback(fromVoice ? `🎤 ${ans}` : `✓  ${ans}`, fromVoice ? 'voice' : 'correct')
     markCorrect(playerNum)
   }
 
   const handlePass = () => {
     if (!duelRef.current?.started || blockRef.current || countdownRef.current) return
-    const ans = duelRef.current.currentQuestion?.answer ?? '???'
-    SoundEngine.play('buzzer', volumeFactor(0.4))
+    const d   = duelRef.current
+    const ans = d.currentQuestion?.answer ?? '???'
+
+    // MAX_PASSES: sprawdź forfeit
+    if (maxPasses > 0 && (d.passCount ?? 0) >= maxPasses) {
+      SoundEngine.play('buzzer', vol(0.6))
+      showFeedback('🚫 Przekroczono limit pasów!', 'forfeit')
+      // Aktywny gracz przegrywa
+      const loser   = d.active
+      const winner2 = (loser === 1 ? 2 : 1) as 1 | 2
+      setTimeout(() => {
+        setWinner(winner2)
+        endDuelWithWinner(winner2)
+        SoundEngine.play('applause', vol(0.9))
+        winnerTimer.current = setTimeout(() => handleCloseRef.current(), config.WIN_CLOSE_MS)
+      }, 1200)
+      return
+    }
+
+    SoundEngine.play('buzzer', vol(0.4))
     showFeedback(`⏱ PAS  ·  ${ans}`, 'pass')
     pass()
   }
 
-  // Keep action refs fresh every render
+  const handleClose = useCallback(() => {
+    cancelCountdown()
+    if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
+    if (winnerTimer.current)   clearTimeout(winnerTimer.current)
+    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
+    if (hintTimer.current)     clearTimeout(hintTimer.current)
+    SoundEngine.stopBg(500)
+    setTimeout(() => SoundEngine.startBg('bgMusic', vol(0.3)), 600)
+    closeDuel()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cancelCountdown, closeDuel])
+
+  handleCloseRef.current   = handleClose
   handlePassRef.current    = handlePass
   handleCorrectRef.current = handleCorrect
 
-  const handleClose = () => {
-    cancelCountdown()
-    if (intervalId) { clearInterval(intervalId); setIntervalId(null) }
-    if (winnerTimer.current)  clearTimeout(winnerTimer.current)
-    if (feedbackTimer.current) clearTimeout(feedbackTimer.current)
-    SoundEngine.stopBg(500)
-    setTimeout(() => SoundEngine.startBg('bgMusic', volumeFactor(0.3)), 600)
-    closeDuel()
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────────────────
+  // tryVoiceMatch — hybrydowe wykrywanie pasa z debounce 180ms
+  //
+  // Problem "tylko final": wolne (~300–500ms po zakończeniu słowa)
+  // Problem "tylko interim": "pasta","pasuje" interim="pas" → fałszywy pas
+  //
+  // Rozwiązanie — debounce na interim:
+  //   interim "pas"    → zaplanuj za 180ms
+  //   interim "pasuje" → anuluj (transcript się wydłużył, nie pasuje już)
+  //   final   "pas"    → odpal natychmiast, anuluj pending
+  // ─────────────────────────────────────────────────────────────────────────
+  const firePas = useCallback((questionId: string | null) => {
+    if (passedQuestionIdRef.current === questionId) return
+    passedQuestionIdRef.current = questionId
+    handlePassRef.current()
+  }, [])
 
-  // ── Shared voice match logic ──────────────────────────────────────────────
-  const tryVoiceMatch = useCallback((transcript: string, strict: boolean) => {
+  const tryVoiceMatch = useCallback((transcript: string, isFinal: boolean) => {
     const d = duelRef.current
     if (!d?.started || blockRef.current || countdownRef.current) return
-
     const questionId = d.currentQuestion?.id ?? null
 
-    // Pass command — blokujemy per-question (tak samo jak odpowiedź)
-    if (isPassCommand(transcript)) {
-      if (passedQuestionIdRef.current === questionId) return
-      passedQuestionIdRef.current = questionId
-      handlePassRef.current()
+    // ── PAS ──────────────────────────────────────────────────────────────────
+    if (voicePassRef.current && isPassCommand(transcript)) {
+      if (passedQuestionIdRef.current === questionId) {
+        if (pasDebounceTimer.current) { clearTimeout(pasDebounceTimer.current); pasDebounceTimer.current = null }
+        return
+      }
+      if (isFinal) {
+        if (pasDebounceTimer.current) { clearTimeout(pasDebounceTimer.current); pasDebounceTimer.current = null }
+        firePas(questionId)
+      } else {
+        if (pasDebounceTimer.current) return
+        pasDebounceTimer.current = setTimeout(() => {
+          pasDebounceTimer.current = null
+          const cur = duelRef.current
+          if (!cur?.started || blockRef.current) return
+          firePas(cur.currentQuestion?.id ?? null)
+        }, 180)
+      }
       return
     }
 
-    // Odpowiedź/synonim — blokujemy tylko to KONKRETNE pytanie (nie czas)
-    // Gdy pytanie się zmieni, matchedQuestionIdRef jest resetowany w useEffect
+    // Transcript rozwinął się poza "pas" (np. "pasuje") → anuluj debounce
+    if (pasDebounceTimer.current) {
+      clearTimeout(pasDebounceTimer.current)
+      pasDebounceTimer.current = null
+    }
+
+    // ── ODPOWIEDŹ: interim (strict) i final (fuzzy) ───────────────────────────
     if (matchedQuestionIdRef.current === questionId) return
+    const matchData = matchDataRef.current
+    if (!matchData) return
 
-    const answer   = currentAnswerRef.current
-    const synonyms = currentSynonymsRef.current
-    if (!answer) return
-
-    if (isAnswerMatch(transcript, answer, synonyms, strict)) {
-      matchedQuestionIdRef.current = questionId  // zablokuj tylko to pytanie
+    if (isAnswerMatchFast(transcript, matchData, !isFinal)) {
+      matchedQuestionIdRef.current = questionId
       handleCorrectRef.current(activePlayerRef.current, true)
     }
-  }, [])
+  }, [firePas])
 
-  /* ── Speech: interim — word-boundary strict matching ── */
-  const handleInterimResult = useCallback((transcript: string) => {
-    tryVoiceMatch(transcript, true /* strict */)
-  }, [tryVoiceMatch])
+  const handleInterimResult = useCallback((t: string) => tryVoiceMatch(t, false), [tryVoiceMatch])
+  const handleFinalResult   = useCallback((t: string) => tryVoiceMatch(t, true),  [tryVoiceMatch])
 
-  /* ── Speech: final — fuzzy matching with all alternatives ── */
-  const handleFinalResult = useCallback((transcript: string) => {
-    tryVoiceMatch(transcript, false /* fuzzy */)
-  }, [tryVoiceMatch])
-
-  /* ── Speech hook ── */
-  // Mikrofon pozostaje aktywny przez całą grę — NIE zatrzymujemy go przy odliczaniu/pauzie.
-  // tryVoiceMatch() sam sprawdza countdownRef/blockRef przed zaliczeniem odpowiedzi.
-  // Zatrzymywanie i restartowanie recognition przy każdej zmianie stanu = zacięcie ~500ms.
-  const speechActive = speechEnabled && !!duel?.started
-
-  const { listening, error: speechError } = useSpeechRecognition({
+  const { listening, error: speechError, updateGrammar } = useSpeechRecognition({
     onFinal:   handleFinalResult,
     onInterim: handleInterimResult,
-    active:    speechActive,
+    active:    speechEnabled && !!duel?.started,
     lang:      duel?.lang === 'both' ? ['pl-PL', 'en-US'] : (duel?.lang ?? 'pl-PL'),
   })
+  // Przechowaj updateGrammar w ref żeby useEffect przy zmianie pytania mógł go wywołać
+  updateGrammarRef.current = updateGrammar
 
-  /* ── Keyboard handler ── */
+  // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isOpen) return
     const handler = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
       if (!duel?.started) {
         if (e.key === 'Enter')  { e.preventDefault(); handleStartFight() }
-        if (e.key === 'Escape') { e.preventDefault(); handleClose() }
+        if (e.key === 'Escape') { e.preventDefault(); handleCloseRef.current() }
         return
       }
       switch (e.key) {
@@ -289,12 +385,12 @@ export default function DuelModal() {
         case 'd': case 'D': e.preventDefault(); handleCorrect(2); break
         case 'p': case 'P': case ' ': e.preventDefault(); handlePass(); break
         case 'm': case 'M': if (speechSupported) setSpeechEnabled(s => !s); break
-        case 'Escape': e.preventDefault(); handleClose(); break
+        case 'Escape': e.preventDefault(); handleCloseRef.current(); break
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, duel?.started, blockInput, countdown, speechSupported])
 
   if (!duel) return null
@@ -303,36 +399,38 @@ export default function DuelModal() {
   const t2 = duel.timer2
   const p1 = players[0]
   const p2 = players[1]
+  const passCount  = duel.passCount ?? 0
+  const passLeft   = maxPasses > 0 ? maxPasses - passCount : null
 
   const timerColor = (t: number) => t <= 5 ? '#ef4444' : t <= 15 ? '#facc15' : '#ffffff'
   const timerGlow  = (t: number) =>
-    t <= 5 ? '0 0 30px rgba(239,68,68,0.7)' : t <= 15 ? '0 0 20px rgba(250,204,21,0.5)' : 'none'
+    t <= 5  ? '0 0 30px rgba(239,68,68,0.7)'  :
+    t <= 15 ? '0 0 20px rgba(250,204,21,0.5)' : 'none'
 
-  const answerBg = (type: FeedbackType) => {
-    if (!feedback.text) return 'rgba(255,255,255,0.04)'
-    if (type === 'correct' || type === 'voice') return 'rgba(34,197,94,0.15)'
-    if (type === 'pass')    return 'rgba(251,146,60,0.15)'
-    return 'rgba(248,113,113,0.12)'
-  }
-  const answerBorder = (type: FeedbackType) => {
-    if (!feedback.text) return 'rgba(255,255,255,0.07)'
-    if (type === 'correct' || type === 'voice') return 'rgba(34,197,94,0.4)'
-    if (type === 'pass')    return 'rgba(251,146,60,0.4)'
-    return 'rgba(248,113,113,0.35)'
-  }
-  const answerGlow = (type: FeedbackType) => {
-    if (!feedback.text) return 'none'
-    if (type === 'correct') return '0 0 30px rgba(34,197,94,0.8), 0 2px 4px rgba(0,0,0,0.8)'
-    if (type === 'voice')   return '0 0 30px rgba(34,197,94,0.8), 0 0 60px rgba(99,220,255,0.4)'
-    if (type === 'pass')    return '0 0 30px rgba(251,146,60,0.8), 0 2px 4px rgba(0,0,0,0.8)'
-    return '0 0 30px rgba(248,113,113,0.8), 0 2px 4px rgba(0,0,0,0.8)'
-  }
+  const fbBg     = (type: FeedbackType) => !feedback.text ? 'rgba(255,255,255,0.04)'
+    : type === 'correct' || type === 'voice' ? 'rgba(34,197,94,0.15)'
+    : type === 'pass'    ? 'rgba(251,146,60,0.15)'
+    : type === 'forfeit' ? 'rgba(239,68,68,0.15)' : 'rgba(248,113,113,0.12)'
+  const fbBorder = (type: FeedbackType) => !feedback.text ? 'rgba(255,255,255,0.07)'
+    : type === 'correct' || type === 'voice' ? 'rgba(34,197,94,0.4)'
+    : type === 'pass'    ? 'rgba(251,146,60,0.4)'
+    : type === 'forfeit' ? 'rgba(239,68,68,0.5)' : 'rgba(248,113,113,0.35)'
+  const fbGlow   = (type: FeedbackType) => !feedback.text ? 'none'
+    : type === 'correct' ? '0 0 30px rgba(34,197,94,0.8)'
+    : type === 'voice'   ? '0 0 30px rgba(34,197,94,0.8), 0 0 60px rgba(99,220,255,0.4)'
+    : type === 'pass'    ? '0 0 30px rgba(251,146,60,0.8)'
+    : type === 'forfeit' ? '0 0 40px rgba(239,68,68,1)'
+    : '0 0 30px rgba(248,113,113,0.8)'
+  const fbColor  = (type: FeedbackType) =>
+    type === 'pass' || type === 'forfeit' ? '#fb923c'
+    : (type === 'correct' || type === 'voice') ? '#4ade80'
+    : type === 'timeout' ? '#ef4444' : 'rgba(255,255,255,0.15)'
 
   return (
     <div style={{
       position: 'fixed', inset: 0, zIndex: 50,
       display: 'flex', alignItems: 'stretch',
-      background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(10px)', padding: '10px',
+      background: 'rgba(0,0,0,0.92)', backdropFilter: 'blur(10px)', padding: 10,
     }}>
       <div style={{
         position: 'relative',
@@ -345,33 +443,52 @@ export default function DuelModal() {
         {/* Header */}
         <div style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          gap: 10, padding: '12px 48px',
+          gap: 10, padding: '10px 56px',
           borderBottom: '1px solid rgba(255,255,255,0.06)',
           background: 'rgba(255,255,255,0.02)', flexShrink: 0, position: 'relative',
         }}>
           <span style={{ fontSize: '1.4rem' }}>{duel.emoji}</span>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.5rem', letterSpacing: 6, color: '#D4AF37' }}>
+          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.4rem', letterSpacing: 6, color: '#D4AF37' }}>
             {duel.categoryName}
           </span>
 
+          {/* Licznik pasów */}
+          {passLeft !== null && (
+            <span style={{
+              position: 'absolute', left: 16, top: '50%', transform: 'translateY(-50%)',
+              fontSize: '0.7rem', letterSpacing: 1, color: passLeft <= 1 ? '#ef4444' : 'rgba(255,255,255,0.3)',
+              padding: '2px 8px', borderRadius: 20,
+              background: passLeft <= 1 ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.05)',
+              border: `1px solid ${passLeft <= 1 ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.08)'}`,
+            }}>
+              PAS: {passLeft}
+            </span>
+          )}
+
+          {/* Mikrofon toggle — zawsze dostępny; VOICE_PASS kontroluje tylko słowo "pas" */}
           {duel.started && speechSupported && (
-            <button
-              onClick={() => setSpeechEnabled(s => !s)}
-              title={speechEnabled ? `Wyłącz mikrofon (M) — ${duel?.lang === 'both' ? 'PL+EN' : duel?.lang ?? 'pl-PL'}` : `Włącz mikrofon (M) — ${duel?.lang === 'both' ? 'PL+EN' : duel?.lang ?? 'pl-PL'}`}
-              style={{ position: 'absolute', right: 52, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}
-            >
+            <button onClick={() => setSpeechEnabled(s => !s)}
+              title={speechEnabled ? 'Wyłącz mikrofon (M)' : 'Włącz mikrofon (M)'}
+              style={{ position: 'absolute', right: 52, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', padding: 6 }}>
               <span style={{
                 display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-                background: speechEnabled ? (listening ? '#4ade80' : 'rgba(129,140,248,0.6)') : 'rgba(255,255,255,0.15)',
-                boxShadow: listening ? '0 0 10px #4ade80, 0 0 20px rgba(74,222,128,0.4)' : 'none',
-                animation: listening ? 'micPulse 1s ease-in-out infinite' : 'none',
-                transition: 'all 0.3s',
+                background: speechEnabled ? (listening ? '#4ade80' : '#818cf8') : 'rgba(255,255,255,0.2)',
+                boxShadow: listening ? '0 0 8px #4ade80' : 'none',
+                animation: listening ? 'micPulse 1.5s ease-in-out infinite' : 'none',
               }} />
             </button>
           )}
+
+          <button onClick={() => handleCloseRef.current()} style={{
+            position: 'absolute', top: '50%', right: 16, transform: 'translateY(-50%)',
+            background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)',
+            fontSize: '1.2rem', cursor: 'pointer', lineHeight: 1,
+          }}
+            onMouseEnter={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.8)')}
+            onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.3)')}>✕</button>
         </div>
 
-        {/* START SCREEN */}
+        {/* Pre-fight */}
         {!duel.started && (
           <div style={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 20, padding: '40px 24px' }}>
             <div style={{ fontSize: '6rem', lineHeight: 1 }}>{duel.emoji}</div>
@@ -384,9 +501,9 @@ export default function DuelModal() {
             </div>
 
             {speechSupported && (
-              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
-                {/* Mic on/off toggle */}
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 30 }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 20px',
+                  background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 30 }}>
                   <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>🎤 Rozpoznawanie mowy</span>
                   <button onClick={() => setSpeechEnabled(s => !s)} style={{
                     width: 44, height: 24, borderRadius: 12, position: 'relative', cursor: 'pointer',
@@ -401,18 +518,16 @@ export default function DuelModal() {
                     }} />
                   </button>
                 </div>
-
-                {/* Lang badge — shows language set for this category */}
-                {speechEnabled && (
-                  <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem', letterSpacing: 1 }}>
-                    {duel?.lang === 'both' ? '🌐 pl + en' : duel?.lang === 'en-US' ? '🇺🇸 English' : '🇵🇱 Polski'}
+                {!voicePassEnabled && speechEnabled && (
+                  <div style={{ color: 'rgba(255,165,0,0.5)', fontSize: '0.7rem', letterSpacing: 1 }}>
+                    🎤 odpowiedzi głosowe aktywne · pas tylko klawiszem P
                   </div>
                 )}
               </div>
             )}
 
             <button onClick={handleStartFight} style={{
-              marginTop: 12, padding: '14px 48px',
+              marginTop: 8, padding: '14px 48px',
               fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.4rem', letterSpacing: 6,
               background: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000',
               border: 'none', borderRadius: 50, cursor: 'pointer',
@@ -421,69 +536,83 @@ export default function DuelModal() {
           </div>
         )}
 
-        {/* FIGHT SCREEN */}
+        {/* Fight */}
         {duel.started && (
           <div style={{ flex: 1, display: 'grid', gridTemplateColumns: 'min(18vw, 200px) 1fr min(18vw, 200px)', minHeight: 0, overflow: 'hidden' }}>
             <PlayerPanel name={p1.name} shortcut="A" timer={t1} active={duel.active === 1} color={p1.color} borderSide="right" timerColor={timerColor(t1)} timerGlow={timerGlow(t1)} />
 
-            {/* Center */}
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '16px 20px 12px', position: 'relative', overflow: 'hidden' }}>
-              {/* Image */}
+            {/* Centrum */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '12px 16px 10px', position: 'relative', overflow: 'hidden' }}>
+
+              {/* Obrazek */}
               <div style={{
                 flex: 1, width: '100%', minHeight: 0,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
                 borderRadius: '12px 12px 0 0', overflow: 'hidden',
                 background: 'rgba(255,255,255,0.03)',
                 border: '1px solid rgba(255,255,255,0.07)', borderBottom: 'none',
+                position: 'relative',
               }}>
-                {imageUrl ? (
-                  <img src={imageUrl} alt="Pytanie" style={{ width: '100%', height: '100%', objectFit: 'contain', borderRadius: '12px 12px 0 0' }} />
-                ) : (
-                  <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8, padding: 40 }}>
-                    <span style={{ fontSize: '5rem' }}>{duel.emoji}</span>
-                    <span style={{ color: 'rgba(255,255,255,0.2)', fontSize: '0.75rem', letterSpacing: 2 }}>WCZYTYWANIE PYTANIA</span>
+                {imageUrl
+                  ? <img src={imageUrl} alt="question" style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain', userSelect: 'none' }} draggable={false} />
+                  : <div style={{ fontSize: '4rem', opacity: 0.3 }}>{duel.emoji}</div>
+                }
+                {/* Wskazówka pierwszej litery */}
+                {hintLetter && config.SHOW_ANSWER_HINT === 1 && (
+                  <div style={{
+                    position: 'absolute', bottom: 8, right: 8,
+                    background: 'rgba(0,0,0,0.7)', borderRadius: 6, padding: '4px 10px',
+                    fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.2rem', letterSpacing: 4,
+                    color: 'rgba(255,215,0,0.7)', border: '1px solid rgba(255,215,0,0.2)',
+                  }}>
+                    {hintLetter}…
                   </div>
                 )}
               </div>
 
-              {/* Answer bar */}
+              {/* Feedback bar */}
               <div style={{
-                width: '100%', minHeight: 64,
+                width: '100%', flexShrink: 0, minHeight: 56,
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                background: answerBg(feedback.type),
-                border: `1px solid ${answerBorder(feedback.type)}`,
-                borderRadius: '0 0 12px 12px', padding: '10px 20px',
-                transition: 'background 0.25s, border-color 0.25s',
+                padding: '8px 16px', textAlign: 'center',
+                background: fbBg(feedback.type),
+                border: `1px solid ${fbBorder(feedback.type)}`,
+                borderTop: 'none', borderRadius: '0 0 12px 12px',
+                boxShadow: fbGlow(feedback.type),
+                transition: 'all 0.3s ease',
               }}>
                 <span style={{
                   fontFamily: "'Bebas Neue', sans-serif",
-                  fontSize: 'clamp(1.4rem, 3.5vh, 2.2rem)',
-                  letterSpacing: 5, fontWeight: 700, color: '#ffffff',
-                  textShadow: answerGlow(feedback.type),
-                  opacity: feedback.text ? 1 : 0.2,
-                  transition: 'all 0.2s', textAlign: 'center',
-                }}>
-                  {feedback.text || '— — —'}
-                </span>
+                  fontSize: 'clamp(1rem, 3vw, 1.6rem)', letterSpacing: 4,
+                  color: fbColor(feedback.type),
+                }}>{feedback.text || '…'}</span>
               </div>
 
-              {/* Controls hint */}
-              <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap', color: 'rgba(255,255,255,0.18)', fontSize: '0.67rem', letterSpacing: 1.2, textAlign: 'center', marginTop: 8, flexShrink: 0, justifyContent: 'center' }}>
-                <span><kbd className="kbd">P</kbd>/<kbd className="kbd">SPACJA</kbd> pas (−{config.PASS_PENALTY}s)</span>
-                <span>·</span>
-                {speechSupported && (
+              {/* Sterowanie */}
+              <div style={{
+                flexShrink: 0, marginTop: 8,
+                display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', justifyContent: 'center',
+                color: 'rgba(255,255,255,0.2)', fontSize: '0.68rem', letterSpacing: 1.5,
+              }}>
+                {speechSupported && voicePassEnabled && (
                   <>
-                    <span style={{ color: speechEnabled ? 'rgba(129,140,248,0.6)' : 'rgba(255,255,255,0.18)' }}>
+                    <span style={{
+                      display: 'flex', alignItems: 'center', gap: 4, padding: '3px 8px', borderRadius: 20,
+                      background: speechEnabled ? 'rgba(99,102,241,0.15)' : 'rgba(255,255,255,0.05)',
+                      border: `1px solid ${speechEnabled ? 'rgba(129,140,248,0.6)' : 'rgba(255,255,255,0.18)'}`,
+                    }}>
                       <kbd className="kbd">M</kbd> mikrofon {speechEnabled ? 'wł.' : 'wył.'}
                     </span>
                     <span>·</span>
                   </>
                 )}
+                <span><kbd className="kbd">P</kbd> pas</span>
+                <span>·</span>
                 <span><kbd className="kbd">ESC</kbd> zakończ</span>
               </div>
 
               {speechError && (
-                <div style={{ marginTop: 6, padding: '4px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, color: '#f87171', fontSize: '0.72rem', textAlign: 'center' }}>
+                <div style={{ marginTop: 4, padding: '3px 12px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6, color: '#f87171', fontSize: '0.72rem', textAlign: 'center' }}>
                   ⚠️ {speechError}
                 </div>
               )}
@@ -501,40 +630,19 @@ export default function DuelModal() {
               fontSize: countdown === 'START!' ? '6rem' : '10rem', lineHeight: 1,
               color: countdown === 'START!' ? '#4ade80' : countdown === '1' ? '#f97316' : '#FFD700',
               textShadow: '0 0 100px currentColor, 0 0 40px currentColor',
-              userSelect: 'none', animation: 'countPop 0.3s ease-out',
+              userSelect: 'none',
             }}>{countdown}</div>
           </div>
         )}
 
         {winner && <WinnerOverlay winner={winner} players={players} />}
-
-        <button onClick={handleClose} style={{ position: 'absolute', top: 12, right: 16, background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', fontSize: '1.2rem', cursor: 'pointer', lineHeight: 1 }}
-          onMouseEnter={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.8)')}
-          onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.3)')}>✕</button>
       </div>
 
       <style>{`
-        @keyframes countPop {
-          from { transform: scale(1.4); opacity: 0; }
-          to   { transform: scale(1);   opacity: 1; }
-        }
-        @keyframes winnerReveal {
-          from { transform: scale(0.8) translateY(20px); opacity: 0; }
-          to   { transform: scale(1)   translateY(0);    opacity: 1; }
-        }
-        @keyframes confettiDrop {
-          0%   { transform: translateY(-20px) rotate(0deg); opacity: 1; }
-          100% { transform: translateY(120px) rotate(720deg); opacity: 0; }
-        }
-        @keyframes micPulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50%      { opacity: 0.5; transform: scale(1.3); }
-        }
-        .kbd {
-          display: inline-block; padding: 1px 6px;
-          background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.15);
-          border-radius: 4px; font-family: monospace; font-size: 0.85em;
-        }
+        @keyframes micPulse { 0%,100% { opacity:1; transform:scale(1) } 50% { opacity:.5; transform:scale(1.3) } }
+        @keyframes winnerReveal { from { transform:scale(.8) translateY(20px); opacity:0 } to { transform:scale(1) translateY(0); opacity:1 } }
+        @keyframes confettiDrop { 0% { transform:translateY(-20px) rotate(0deg); opacity:1 } 100% { transform:translateY(120px) rotate(720deg); opacity:0 } }
+        .kbd { display:inline-block; padding:1px 6px; background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); border-radius:4px; font-family:monospace; font-size:.85em }
       `}</style>
     </div>
   )
@@ -547,20 +655,38 @@ function PlayerPanel({ name, shortcut, timer, active, color, borderSide, timerCo
   return (
     <div style={{
       display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-      gap: 'clamp(8px, 2vh, 20px)', padding: 'clamp(16px, 3vh, 40px) 12px',
+      gap: 'clamp(6px,1.5vh,16px)', padding: 'clamp(12px,2.5vh,32px) 12px',
       borderLeft:  borderSide === 'left'  ? '1px solid rgba(255,255,255,0.08)' : 'none',
       borderRight: borderSide === 'right' ? '1px solid rgba(255,255,255,0.08)' : 'none',
       background: active ? `${color}14` : 'transparent',
       opacity: active ? 1 : 0.4, transition: 'all 0.4s ease', position: 'relative',
     }}>
-      <div style={{ width: 8, height: 8, borderRadius: '50%', background: active ? color : 'rgba(255,255,255,0.1)', boxShadow: active ? `0 0 16px ${color}, 0 0 32px ${color}40` : 'none', transition: 'all 0.3s' }} />
-      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.95rem', letterSpacing: 5, color }}>{name}</div>
-      <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 'clamp(3.5rem, 9vh, 8rem)', lineHeight: 1, color: timerColor, textShadow: timerGlow, transition: 'color 0.5s, text-shadow 0.5s' }}>{timer}</div>
+      <div style={{
+        width: 10, height: 10, borderRadius: '50%',
+        background: active ? color : 'rgba(255,255,255,0.1)',
+        boxShadow: active ? `0 0 16px ${color}, 0 0 32px ${color}40` : 'none',
+        transition: 'all 0.3s',
+      }} />
+      <div style={{
+        fontFamily: "'Bebas Neue', sans-serif",
+        fontSize: 'clamp(1.3rem, 3.5vw, 2rem)', letterSpacing: 4, color,
+        textAlign: 'center', lineHeight: 1.1,
+        textShadow: active ? `0 0 20px ${color}80` : 'none',
+        transition: 'text-shadow 0.3s',
+      }}>{name}</div>
+      <div style={{
+        fontFamily: "'Bebas Neue', sans-serif",
+        fontSize: 'clamp(3.5rem, 9vh, 8rem)', lineHeight: 1,
+        color: timerColor, textShadow: timerGlow, transition: 'color .5s, text-shadow .5s',
+      }}>{timer}</div>
       <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.7rem', letterSpacing: 2 }}>
         <kbd className="kbd">{shortcut}</kbd> poprawna
       </div>
       {active && (
-        <div style={{ position: 'absolute', top: '25%', bottom: '25%', [borderSide]: 0, width: 3, borderRadius: 4, background: color, boxShadow: `0 0 12px ${color}` }} />
+        <div style={{
+          position: 'absolute', top: '25%', bottom: '25%', [borderSide]: 0,
+          width: 3, borderRadius: 4, background: color, boxShadow: `0 0 12px ${color}`,
+        }} />
       )}
     </div>
   )
@@ -572,26 +698,33 @@ function WinnerOverlay({ winner, players }: {
 }) {
   const isDraw = winner === 'draw'
   const color  = isDraw ? '#C0C0C0' : winner === 1 ? players[0].color : players[1].color
-  const label  = isDraw ? 'REMIS' : winner === 1 ? `${players[0].name} ZWYCIĘŻA!` : `${players[1].name} ZWYCIĘŻA!`
-  const icon   = isDraw ? '⚖️' : winner === 1 ? '🥇' : '🥈'
+  const label  = isDraw ? 'REMIS'   : winner === 1 ? `${players[0].name} ZWYCIĘŻA!` : `${players[1].name} ZWYCIĘŻA!`
+  const icon   = isDraw ? '⚖️'     : winner === 1 ? '🥇' : '🥈'
   return (
-    <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.93)', borderRadius: 14, zIndex: 20, gap: 16 }}>
+    <div style={{
+      position: 'absolute', inset: 0,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(0,0,0,0.93)', borderRadius: 14, zIndex: 20, gap: 16,
+    }}>
       {!isDraw && Array.from({ length: 16 }).map((_, i) => (
         <div key={i} style={{
           position: 'absolute',
           top: `${10 + Math.random() * 30}%`, left: `${5 + (i / 16) * 90}%`,
           width: 8, height: 8, borderRadius: i % 3 === 0 ? '50%' : 2,
-          background: i % 2 === 0 ? color : i % 3 === 0 ? '#fff' : 'rgba(255,255,255,0.4)',
+          background: i % 2 === 0 ? color : '#fff',
           animation: `confettiDrop ${1.2 + Math.random() * 1.2}s ease-in ${Math.random() * 0.5}s both`,
         }} />
       ))}
-      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, animation: 'winnerReveal 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both' }}>
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 16, animation: 'winnerReveal .5s cubic-bezier(.34,1.56,.64,1) both' }}>
         <div style={{ fontSize: '6rem', lineHeight: 1 }}>{icon}</div>
-        <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: 'clamp(2rem, 6vw, 3.5rem)', letterSpacing: 8, color, textShadow: `0 0 40px ${color}80, 0 0 80px ${color}40` }}>{label}</div>
-        <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.9rem', letterSpacing: 4, textTransform: 'uppercase' }}>
+        <div style={{
+          fontFamily: "'Bebas Neue', sans-serif",
+          fontSize: 'clamp(2rem, 6vw, 3.5rem)', letterSpacing: 8, color,
+          textShadow: `0 0 40px ${color}80, 0 0 80px ${color}40`,
+        }}>{label}</div>
+        <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.9rem', letterSpacing: 4 }}>
           {isDraw ? 'Pole bez zmian' : 'Pole przejęte!'}
         </div>
-        <div style={{ marginTop: 8, color: 'rgba(255,255,255,0.2)', fontSize: '0.75rem', letterSpacing: 2 }}>Automatyczne zamknięcie…</div>
       </div>
     </div>
   )
