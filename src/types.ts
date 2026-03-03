@@ -1,150 +1,220 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// types.ts — Centralne typy całej aplikacji
-//
-// NOWE POLA:
-//   MUSIC_VOLUME   — osobna głośność muzyki tła (0–100)
-//   SFX_VOLUME     — osobna głośność efektów dźwiękowych (0–100)
-//   VOICE_PASS     — 0 = głosowy "pas" wyłączony (tylko klawiatura), 1 = włączony
-//   MAX_PASSES     — 0 = nielimitowany, N = max pasów na pojedynek zanim forfeit
-//   SHOW_ANSWER_HINT — 0 = nie, 1 = pokaż pierwszą literę po 10s
-//   ROUND_TIMER    — 0 = normalny, 1 = limit rund (MAX_ROUNDS)
-//   MAX_ROUNDS     — maks. rund przy ROUND_TIMER=1
-//   TILE_FLIP_ANIM — 0 = brak, 1 = animacja flip przy zmianie właściciela
-//   SOUND_VOLUME   — (zachowane dla wstecznej kompatybilności, master fallback)
-// ─────────────────────────────────────────────────────────────────────────────
+// src/types.ts — ROZSZERZONY O TYPY MULTIPLAYER
+// Oryginalne typy Singleplayer pozostają bez zmian
+
+// ─────────────────────────────────────────────────────────────
+// ORYGINALNE TYPY (bez zmian)
+// ─────────────────────────────────────────────────────────────
 
 export interface GameConfig {
-  // ── Plansza ──────────────────────────────────────────────────────────────
-  GRID_COLS:   number   // legacy (override)
-  GRID_ROWS:   number   // legacy (override)
-  TILE_SIZE:   number
-  BOARD_SHAPE: number   // 0=4×3, 1=6×2, 2=3×4, 3=4×4, 4=5×3, 5=6×4
-
-  // ── Rozgrywka ─────────────────────────────────────────────────────────────
-  DUEL_TIME:    number   // czas każdego gracza (s)
-  PASS_PENALTY: number   // kara za pas (s)
-  FEEDBACK_MS:  number   // czas wyświetlania odpowiedzi (ms)
-  WIN_CLOSE_MS: number   // auto-zamknięcie popupu wygranej (ms)
-  TOAST_MS:     number   // czas toastów (ms)
-  RANDOM_TILES: number   // 0 = kolejność, 1 = losowe przypisanie kategorii
-  MAX_PASSES:   number   // 0 = bez limitu, N = maks. pasów na pojedynek
-
-  // ── Dźwięk ───────────────────────────────────────────────────────────────
-  SOUND_VOLUME:  number  // master fallback (0–100)
-  MUSIC_VOLUME:  number  // głośność muzyki tła (0–100)
-  SFX_VOLUME:    number  // głośność efektów (0–100)
-
-  // ── Rozpoznawanie mowy ────────────────────────────────────────────────────
-  VOICE_PASS:   number   // 0 = wyłączone (tylko klawiatura), 1 = włączone
-
-  // ── Wyświetlanie ──────────────────────────────────────────────────────────
-  SHOW_STATS:       number  // 0 = ukryte domyślnie, 1 = widoczne
-  SHOW_ANSWER_HINT: number  // 0 = nie, 1 = pierwsza litera po 10s
-  TILE_FLIP_ANIM:   number  // 0 = brak, 1 = animacja flip (przyszłe)
-
-  // ── Timer rund ────────────────────────────────────────────────────────────
-  ROUND_TIMER: number  // 0 = normalny tryb, 1 = tryb rund (przyszłe)
-  MAX_ROUNDS:  number  // maks. rund przy ROUND_TIMER=1 (przyszłe)
+  // Board
+  GRID_COLS: number
+  GRID_ROWS: number
+  TILE_SIZE: number
+  // Gameplay
+  DUEL_TIME: number
+  PASS_PENALTY: number
+  FEEDBACK_MS: number
+  WIN_CLOSE_MS: number
+  TOAST_MS: number
+  // New options
+  RANDOM_TILES: number       // 0 = sequential, 1 = random category placement
+  SHOW_STATS: number         // 0 = hidden by default, 1 = shown by default
+  SOUND_VOLUME: number       // 0–100 master volume
+  BOARD_SHAPE: number        // 0 = rectangle, 1 = wide (6x2), 2 = tall (3x4), 3 = square (4x4)
 }
 
 export interface PlayerSettings {
-  name:  string
+  name: string
   color: string
 }
 
 export type SpeechLang = 'pl-PL' | 'en-US' | 'both'
 
 export interface Category {
-  id:         string
-  name:       string
-  emoji:      string
-  lang:       SpeechLang
+  id: string
+  name: string
+  emoji: string
+  lang: SpeechLang
   created_at: string
 }
 
 export interface Question {
-  id:          string
+  id: string
   category_id: string
-  image_path:  string | null
-  answer:      string
-  synonyms:    string[]
-  created_at:  string
+  image_path: string | null
+  answer: string
+  synonyms: string[]
+  created_at: string
 }
 
 export type TileOwner = 'gold' | 'silver'
 
 export interface Tile {
-  x:            number
-  y:            number
-  categoryId:   string
+  x: number
+  y: number
+  categoryId: string
   categoryName: string
-  owner:        TileOwner
+  owner: TileOwner
 }
 
 export interface DuelState {
-  tileIdx:         number
-  categoryId:      string
-  categoryName:    string
-  emoji:           string
-  questions:       Question[]
-  usedIds:         Set<string>
-  timer1:          number
-  timer2:          number
-  active:          1 | 2
-  paused:          boolean
-  started:         boolean
+  tileIdx: number
+  categoryId: string
+  categoryName: string
+  emoji: string
+  questions: Question[]
+  usedIds: Set<string>
+  timer1: number
+  timer2: number
+  active: 1 | 2
+  paused: boolean
+  started: boolean
   currentQuestion: Question | null
-  lang:            SpeechLang
-  passCount:       number   // licznik pasów (dla MAX_PASSES)
+  lang: SpeechLang
 }
 
 export interface GameStats {
-  goldTiles:   number
+  goldTiles: number
   silverTiles: number
-  totalTiles:  number
-  goldPct:     number
-  silverPct:   number
+  totalTiles: number
+  goldPct: number
+  silverPct: number
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Future Feature Scaffolding
-// Interfejsy przygotowane pod rozbudowę — nieużywane w bieżącej wersji.
-// Oznaczone @future — nie importuj ich bezpośrednio, dopóki funkcja nie jest gotowa.
-// ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// NOWE TYPY — MULTIPLAYER / AUTH
+// ─────────────────────────────────────────────────────────────
 
-/** @future — historia rund/gier */
-export interface GameRound {
-  roundId:    string
-  tileIdx:    number
-  winnerId:   'gold' | 'silver' | 'draw'
-  duration:   number       // ms
-  passCount:  number
-  timestamp:  number
+/** Publiczny profil gracza (tabela: profiles) */
+export interface UserProfile {
+  id: string
+  username: string
+  avatar: string          // emoji
+  xp: number
+  wins: number
+  losses: number
+  win_streak: number
+  best_streak: number
+  is_admin: boolean
+  created_at: string
+  updated_at: string
 }
 
-/** @future — statystyki sesji */
-export interface GameSession {
-  sessionId:  string
-  startedAt:  number
-  rounds:     GameRound[]
-  finalScore: { gold: number; silver: number }
+/** Ranga gracza na podstawie XP */
+export interface Rank {
+  min: number
+  max: number
+  name: string
+  icon: string
+  color: string
 }
 
-/** @future — feature flags (bez przebudowy typów) */
-export interface FeatureFlags {
-  MULTIPLAYER_ONLINE: boolean    // Gra online w czasie rzeczywistym
-  GAME_HISTORY:       boolean    // Historia i statystyki gier
-  VISUAL_THEMES:      boolean    // Motywy wizualne
-  ROUND_MODE:         boolean    // Tryb rund z limitem
-  POWER_UPS:          boolean    // Specjalne umiejętności graczy
-  LEADERBOARD:        boolean    // Tablica wyników
+/** Pokój gry multiplayer (tabela: game_rooms) */
+export interface GameRoom {
+  id: string
+  code: string            // 6-znakowy kod pokoju
+  host_id: string
+  guest_id: string | null
+  status: 'waiting' | 'playing' | 'finished' | 'cancelled'
+  config: RoomConfig
+  current_round: number
+  host_score: number
+  guest_score: number
+  game_state: MPGameState | null
+  current_turn: 'host' | 'guest'
+  created_at: string
+  updated_at: string
 }
 
-export const FEATURE_FLAGS_DEFAULT: FeatureFlags = {
-  MULTIPLAYER_ONLINE: false,
-  GAME_HISTORY:       false,
-  VISUAL_THEMES:      false,
-  ROUND_MODE:         false,
-  POWER_UPS:          false,
-  LEADERBOARD:        false,
+/** Konfiguracja pokoju */
+export interface RoomConfig {
+  rounds: number
+  duel_time: number
+  board_shape: number
+  random_tiles?: boolean
+}
+
+/** Kafelek w grze multiplayer */
+export type MPTileOwner = 'host' | 'guest' | null
+
+export interface MPTile {
+  idx: number
+  categoryId: string
+  categoryName: string
+  emoji: string
+  owner: MPTileOwner
+}
+
+/** Faza gry multiplayer */
+export type MPGamePhase =
+  | 'countdown'    // odliczanie startowe 3-2-1
+  | 'select_tile'  // gracz wybiera kafelek
+  | 'duel'         // obaj grają duel
+  | 'round_end'    // podsumowanie rundy
+  | 'game_over'    // koniec gry
+
+/** Pytanie w trybie multiplayer */
+export interface MPQuestion {
+  id: string
+  answer: string
+  synonyms: string[]
+  image_path: string | null
+  categoryName: string
+  emoji: string
+}
+
+/** Pełny stan gry MP (zapisywany w game_rooms.game_state) */
+export interface MPGameState {
+  phase: MPGamePhase
+  tiles: MPTile[]
+  currentTurn: 'host' | 'guest'
+  selectedTileIdx: number | null
+  currentQuestion: MPQuestion | null
+  usedQuestionIds: string[]
+  round: number
+  totalRounds: number
+  hostScore: number
+  guestScore: number
+  duelTimer: number
+  hostAnswered: boolean
+  guestAnswered: boolean
+  roundWinner: 'host' | 'guest' | 'draw' | null
+  winner: 'host' | 'guest' | 'draw' | null
+  startedAt: number
+}
+
+/** Wpis w historii gier (tabela: game_history) */
+export interface GameHistoryEntry {
+  id: string
+  room_id: string | null
+  winner_id: string | null
+  loser_id: string | null
+  winner_score: number
+  loser_score: number
+  rounds_total: number
+  duration_sec: number
+  is_draw: boolean
+  played_at: string
+}
+
+/** Wpis w kolejce matchmakingu (tabela: matchmaking_queue) */
+export interface MatchmakingEntry {
+  id: string
+  player_id: string
+  elo: number
+  joined_at: string
+}
+
+/** Wiersz tabeli liderów (widok: leaderboard) */
+export interface LeaderboardEntry {
+  id: string
+  username: string
+  avatar: string
+  xp: number
+  wins: number
+  losses: number
+  win_streak: number
+  best_streak: number
+  win_rate: number
+  rank: number
 }

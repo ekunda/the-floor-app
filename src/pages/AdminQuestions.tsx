@@ -248,10 +248,10 @@ export default function AdminQuestions() {
 
       {/* ── Header ── */}
       <div style={{
-        display: 'flex', alignItems: 'center', gap: 12,
+        display: 'flex', alignItems: 'center', gap: 16,
         padding: '14px clamp(16px,4vw,32px)',
         borderBottom: '1px solid rgba(255,255,255,0.06)',
-        background: '#0a0a0a', flexWrap: 'wrap',
+          background: '#0a0a0a', flexWrap: 'wrap',
       }}>
         <Link to="/admin/config" style={{
           color: 'rgba(255,255,255,0.35)', textDecoration: 'none', fontSize: '0.85rem',
