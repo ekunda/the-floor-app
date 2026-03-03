@@ -1,137 +1,111 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// AdminConfig.tsx — Panel konfiguracji
-//
-// NOWE OPCJE w sekcji "Wyświetlanie i dźwięk":
-//   - Osobny suwak MUSIC_VOLUME (muzyka tła)
-//   - Osobny suwak SFX_VOLUME (efekty dźwiękowe)
-//   - Podgląd w czasie rzeczywistym (SoundEngine.setMusicVolume/setSfxVolume)
-//
-// NOWE OPCJE w sekcji "Rozgrywka":
-//   - VOICE_PASS toggle (włącz/wyłącz głosowy "pas")
-//   - MAX_PASSES (0=bez limitu, N=forfeit)
-//   - SHOW_ANSWER_HINT (wskazówka pierwszej litery)
-//
-// NAPRAWIONE:
-//   - Nazwy graczy zapisywane do Supabase (updatePlayer jest teraz async)
-//   - Wskaźnik zapisu przy nazwie gracza
-//
-// SEKCJA "PRZYSZŁE FUNKCJE" — zaplanowane możliwości z opisami i etykietami statusu
-// ─────────────────────────────────────────────────────────────────────────────
-import { useEffect, useMemo, useRef, useState } from 'react'
+/**
+ * AdminConfig v2 — SP/MP split + Player management
+ */
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { SoundEngine } from '../lib/SoundEngine'
 import { clearSession, formatRemaining, sessionRemainingMs, supabase } from '../lib/supabase'
 import { BOARD_PRESETS, DEFAULTS, useConfigStore } from '../store/useConfigStore'
-import { useGameStore } from '../store/useGameStore'
 import { Category, GameConfig, SpeechLang } from '../types'
+import AdminPlayers from './AdminPlayers'
 
-type Section = 'categories' | 'board' | 'gameplay' | 'players' | 'display' | 'advanced' | 'future'
+type SPSection  = 'categories' | 'board' | 'gameplay_sp' | 'players_sp' | 'display' | 'advanced'
+type MPSection  = 'gameplay_mp' | 'xp_config' | 'history'
+type ActiveMode = 'sp' | 'mp' | 'players'
 
-const SECTIONS: { id: Section; label: string; icon: string }[] = [
-  { id: 'categories', label: 'Kategorie',    icon: '📂' },
-  { id: 'board',      label: 'Plansza',      icon: '🎯' },
-  { id: 'gameplay',   label: 'Rozgrywka',    icon: '⚔️'  },
-  { id: 'players',    label: 'Gracze',       icon: '👥' },
-  { id: 'display',    label: 'Dźwięk',       icon: '🔊' },
-  { id: 'advanced',   label: 'Zaawansowane', icon: '⚙️'  },
-  { id: 'future',     label: 'Przyszłe',     icon: '🚀' },
+const SP_SECTIONS: { id: SPSection; label: string; icon: string }[] = [
+  { id: 'categories',  label: 'Kategorie',    icon: '📂' },
+  { id: 'board',       label: 'Plansza',      icon: '🎯' },
+  { id: 'gameplay_sp', label: 'Rozgrywka SP', icon: '⚔️' },
+  { id: 'players_sp',  label: 'Gracze SP',    icon: '👥' },
+  { id: 'display',     label: 'Wyświetlanie', icon: '🖥️' },
+  { id: 'advanced',    label: 'Zaawansowane', icon: '⚙️' },
 ]
 
-const GAMEPLAY_FIELDS: {
-  key: keyof GameConfig; label: string; desc: string; min: number; max: number; unit: string
-}[] = [
-  { key: 'DUEL_TIME',    label: 'Czas gracza',    desc: 'Sekundy na odpowiedź per gracz',   min: 10,   max: 120,   unit: 's'  },
-  { key: 'PASS_PENALTY', label: 'Kara za pas',    desc: 'Sekundy odejmowane przy pasie',     min: 0,    max: 30,    unit: 's'  },
-  { key: 'MAX_PASSES',   label: 'Limit pasów',    desc: '0 = bez limitu; forfeit po N pasach', min: 0,  max: 20,    unit: ''   },
-  { key: 'FEEDBACK_MS',  label: 'Czas feedbacku', desc: 'Wyświetlanie odpowiedzi (ms)',       min: 300,  max: 5000,  unit: 'ms' },
-  { key: 'WIN_CLOSE_MS', label: 'Popup wygranej', desc: 'Auto-zamknięcie wyniku (ms)',        min: 1000, max: 10000, unit: 'ms' },
-  { key: 'TOAST_MS',     label: 'Czas toastu',    desc: 'Wyświetlanie powiadomień (ms)',      min: 500,  max: 5000,  unit: 'ms' },
+const MP_SECTIONS: { id: MPSection; label: string; icon: string }[] = [
+  { id: 'gameplay_mp', label: 'Rozgrywka MP', icon: '🌐' },
+  { id: 'xp_config',   label: 'XP & Ranking', icon: '🏆' },
+  { id: 'history',     label: 'Historia gier', icon: '📋' },
 ]
 
-function filenameToAnswer(filename: string): string {
-  return filename
-    .replace(/\.[^.]+$/, '')
-    .replace(/[_-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
+const SP_GAMEPLAY: { key: keyof GameConfig; label: string; desc: string; min: number; max: number; unit: string }[] = [
+  { key: 'DUEL_TIME',    label: 'Czas gracza',      desc: 'Sekundy na odpowiedz (SP)',    min: 10,   max: 120,   unit: 's'  },
+  { key: 'PASS_PENALTY', label: 'Kara za pas',      desc: 'Sekundy odejmowane przy pasie',min: 0,    max: 30,    unit: 's'  },
+  { key: 'FEEDBACK_MS',  label: 'Czas feedbacku',   desc: 'Wyswietlanie odpowiedzi (ms)', min: 300,  max: 5000,  unit: 'ms' },
+  { key: 'WIN_CLOSE_MS', label: 'Popup wygranej',   desc: 'Auto-zamkniecie wygranej (ms)',min: 1000, max: 10000, unit: 'ms' },
+  { key: 'TOAST_MS',     label: 'Czas powiadomien', desc: 'Czas toast-ow (ms)',           min: 500,  max: 5000,  unit: 'ms' },
+]
+
+const MP_GAMEPLAY: { key: keyof GameConfig; label: string; desc: string; min: number; max: number; unit: string }[] = [
+  { key: 'MP_DUEL_TIME',    label: 'Czas gracza MP',    desc: 'Sekundy na odpowiedz (Online)',  min: 10,   max: 180,   unit: 's'  },
+  { key: 'MP_PASS_PENALTY', label: 'Kara za pas MP',    desc: 'Sekundy kary za pas (Online)',   min: 0,    max: 30,    unit: 's'  },
+  { key: 'MP_FEEDBACK_MS',  label: 'Feedback MP',       desc: 'Wyswietlanie odpowiedzi (ms)',   min: 300,  max: 5000,  unit: 'ms' },
+  { key: 'MP_WIN_CLOSE_MS', label: 'Popup wygranej MP', desc: 'Auto-zamkniecie wygranej (ms)',  min: 1000, max: 10000, unit: 'ms' },
+]
+
+const XP_FIELDS: { key: keyof GameConfig; label: string; desc: string; min: number; max: number; color: string }[] = [
+  { key: 'MP_XP_WIN',  label: 'XP za wygranie',  desc: 'Punkty za wygrana gre online', min: 0, max: 500, color: '#4ade80' },
+  { key: 'MP_XP_DRAW', label: 'XP za remis',     desc: 'Punkty za remis',              min: 0, max: 250, color: '#facc15' },
+  { key: 'MP_XP_LOSS', label: 'XP za przegrana', desc: 'Punkty za uczestnictwo',       min: 0, max: 100, color: '#fb923c' },
+]
+
+function filenameToAnswer(f: string) {
+  return f.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// Styles
-// ══════════════════════════════════════════════════════════════════════════════
-const inp: React.CSSProperties = {
-  width: '100%', padding: '10px 14px', borderRadius: 8, boxSizing: 'border-box',
-  background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
-  color: '#fff', fontSize: '0.9rem', outline: 'none', transition: 'border-color 0.2s',
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Main component
-// ══════════════════════════════════════════════════════════════════════════════
+// ─── Main Component ───────────────────────────────────────────────────────────
 export default function AdminConfig() {
   const navigate = useNavigate()
-  const {
-    config, fetch, update, players, updatePlayer, resetAll,
-    tileCategories, setTileCategory, resetTileCategories,
-  } = useConfigStore()
-  const gameCategories = useGameStore(s => s.categories)
+  const { config, fetch, update, players, updatePlayer, resetAll,
+    tileCategories, setTileCategory, resetTileCategories } = useConfigStore()
 
-  const [section, setSection]           = useState<Section>('categories')
-  const [saved, setSaved]               = useState(false)
-  const [sidebarOpen, setSidebarOpen]   = useState(false)
-  const [confirmReset, setConfirmReset] = useState(false)
-  const [resetting, setResetting]       = useState(false)
-  const [sessionLeft, setSessionLeft]   = useState(sessionRemainingMs())
+  const [mode,    setMode]    = useState<ActiveMode>('sp')
+  const [spSect,  setSpSect]  = useState<SPSection>('categories')
+  const [mpSect,  setMpSect]  = useState<MPSection>('gameplay_mp')
+  const [saved,   setSaved]   = useState(false)
+  const [sessionLeft, setSessionLeft] = useState(sessionRemainingMs())
 
-  const [cats, setCats]               = useState<Category[]>([])
-  const [catName, setCatName]         = useState('')
-  const [catEmoji, setCatEmoji]       = useState('🎯')
-  const [catLang, setCatLang]         = useState<SpeechLang>('pl-PL')
-  const [editing, setEditing]         = useState<Category | null>(null)
+  const [cats, setCats]         = useState<Category[]>([])
+  const [catName, setCatName]   = useState('')
+  const [catEmoji, setCatEmoji] = useState('🎯')
+  const [catLang, setCatLang]   = useState<SpeechLang>('pl-PL')
+  const [editing, setEditing]   = useState<Category | null>(null)
   const [catsLoading, setCatsLoading] = useState(false)
 
-  const [bulkCatId, setBulkCatId]           = useState('')
-  const [bulkFiles, setBulkFiles]           = useState<File[]>([])
-  const [bulkProgress, setBulkProgress]     = useState(0)
-  const [bulkUploading, setBulkUploading]   = useState(false)
-  const [bulkDone, setBulkDone]             = useState(false)
-  const [bulkError, setBulkError]           = useState<string | null>(null)
+  const [bulkCatId, setBulkCatId]       = useState('')
+  const [bulkFiles, setBulkFiles]       = useState<File[]>([])
+  const [bulkProgress, setBulkProgress] = useState(0)
+  const [bulkUploading, setBulkUploading] = useState(false)
+  const [bulkDone, setBulkDone]         = useState(false)
+  const [bulkError, setBulkError]       = useState<string | null>(null)
   const bulkRef = useRef<HTMLInputElement>(null)
 
-  // Player save indicator
-  const [playerSaving, setPlayerSaving] = useState<Record<number, boolean>>({})
+  const [history, setHistory]       = useState<any[]>([])
+  const [histLoading, setHistLoading] = useState(false)
 
-  const totalTiles = (() => {
-    const preset = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    return preset.cols * preset.rows
-  })()
+  const [confirmResetAll, setConfirmResetAll] = useState(false)
+  const [resetting, setResetting]             = useState(false)
 
-  useEffect(() => { SoundEngine.stopBg(0) }, [])
-  useEffect(() => { fetch() }, [])
-  useEffect(() => { loadCats() }, [])
-
+  useEffect(() => { SoundEngine.stopBg(0); fetch(); loadCats() }, [])
   useEffect(() => {
     const iv = setInterval(() => {
-      const rem = sessionRemainingMs()
-      setSessionLeft(rem)
-      if (rem <= 0) handleLogout()
+      const r = sessionRemainingMs(); setSessionLeft(r)
+      if (r <= 0) { clearSession(); navigate('/admin') }
     }, 1000)
     return () => clearInterval(iv)
   }, [])
 
-  const handleLogout = () => { clearSession(); navigate('/admin') }
-  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 1200) }
-
-  const handleUpdate = async (key: keyof GameConfig, value: number) => {
-    await update(key, value)
-    flash()
-  }
-
   const loadCats = async () => {
     setCatsLoading(true)
     const { data } = await supabase.from('categories').select('*').order('created_at')
-    setCats(data ?? [])
-    setCatsLoading(false)
+    setCats(data ?? []); setCatsLoading(false)
+  }
+
+  const loadHistory = async () => {
+    setHistLoading(true)
+    const { data } = await supabase.from('game_history').select('*')
+      .order('played_at', { ascending: false }).limit(50)
+    setHistory(data ?? []); setHistLoading(false)
   }
 
   const addCat = async () => {
@@ -139,922 +113,472 @@ export default function AdminConfig() {
     await supabase.from('categories').insert({ name: catName.trim(), emoji: catEmoji, lang: catLang })
     setCatName(''); setCatEmoji('🎯'); loadCats()
   }
-
   const saveEditCat = async () => {
     if (!editing) return
-    await supabase.from('categories').update({
-      name: editing.name, emoji: editing.emoji, lang: editing.lang ?? 'pl-PL',
-    }).eq('id', editing.id)
+    await supabase.from('categories').update({ name: editing.name, emoji: editing.emoji, lang: editing.lang ?? 'pl-PL' }).eq('id', editing.id)
     setEditing(null); loadCats()
   }
-
   const removeCat = async (id: string) => {
-    if (!confirm('Usunąć kategorię i wszystkie pytania?')) return
+    if (!confirm('Usunac kategorie i wszystkie pytania?')) return
     await supabase.from('questions').delete().eq('category_id', id)
     await supabase.from('categories').delete().eq('id', id)
     loadCats()
   }
-
-  // ── Bulk upload ────────────────────────────────────────────────────────────
+  const handleUpdate = async (key: keyof GameConfig, value: number) => {
+    await update(key, value); setSaved(true); setTimeout(() => setSaved(false), 1500)
+  }
+  const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 1500) }
+  const handleLogout = () => { clearSession(); navigate('/admin') }
+  const handleResetAll = async () => {
+    setResetting(true); await resetAll(); setResetting(false)
+    setConfirmResetAll(false); flash()
+  }
   const handleBulkUpload = async () => {
     if (!bulkCatId || bulkFiles.length === 0) return
-    setBulkUploading(true); setBulkDone(false); setBulkError(null); setBulkProgress(0)
-    let errors = 0
-    for (let i = 0; i < bulkFiles.length; i++) {
-      const f   = bulkFiles[i]
-      const ext = f.name.split('.').pop()?.toLowerCase() ?? 'jpg'
-      const path = `${bulkCatId}/bulk-${crypto.randomUUID()}.${ext}`
-      const ct  = ext === 'png' ? 'image/png' : ext === 'gif' ? 'image/gif' : ext === 'webp' ? 'image/webp' : 'image/jpeg'
-      const { error: upErr } = await supabase.storage.from('question-images').upload(path, f, { contentType: ct })
-      if (upErr) { errors++; continue }
-      const answer = filenameToAnswer(f.name)
+    setBulkUploading(true); setBulkProgress(0); setBulkError(null); setBulkDone(false)
+    let done = 0
+    for (const file of bulkFiles) {
+      const answer = filenameToAnswer(file.name)
+      const ext    = file.name.split('.').pop()
+      const path   = `${bulkCatId}/${Date.now()}_${Math.random().toString(36).slice(2)}.${ext}`
+      const { error: upErr } = await supabase.storage.from('question-images').upload(path, file, { upsert: true })
+      if (upErr) { setBulkError(upErr.message); break }
       await supabase.from('questions').insert({ category_id: bulkCatId, image_path: path, answer, synonyms: [] })
-      setBulkProgress(Math.round(((i + 1) / bulkFiles.length) * 100))
+      done++; setBulkProgress(Math.round((done / bulkFiles.length) * 100))
     }
-    setBulkUploading(false)
-    if (errors > 0) setBulkError(`${errors} plików nie udało się wysłać.`)
-    else setBulkDone(true)
-    setBulkFiles([])
-    if (bulkRef.current) bulkRef.current.value = ''
+    setBulkUploading(false); setBulkDone(true)
+    setBulkFiles([]); if (bulkRef.current) bulkRef.current.value = ''
   }
 
-  // ── Player name update (async) ─────────────────────────────────────────────
-  const handlePlayerUpdate = async (idx: 0 | 1, field: 'name' | 'color', value: string) => {
-    setPlayerSaving(s => ({ ...s, [idx]: true }))
-    await updatePlayer(idx, field, value)
-    setPlayerSaving(s => ({ ...s, [idx]: false }))
-    flash()
-  }
+  const preset     = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
+  const totalTiles = preset.cols * preset.rows
+  const sessionColor = sessionLeft < 5 * 60 * 1000 ? '#f87171' : sessionLeft < 15 * 60 * 1000 ? '#facc15' : 'rgba(255,255,255,0.3)'
 
-  const handleReset = async () => {
-    setResetting(true)
-    await resetAll()
-    setResetting(false); setConfirmReset(false); flash()
+  const inp: React.CSSProperties = {
+    background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
+    borderRadius: 8, padding: '8px 12px', color: '#fff',
+    fontFamily: "'Montserrat', sans-serif", fontSize: '0.9rem',
+    outline: 'none', width: '100%', boxSizing: 'border-box',
   }
+  const modeBtn = (m: ActiveMode, color: string): React.CSSProperties => ({
+    flex: 1, padding: '11px 10px',
+    background: mode === m ? `${color}18` : 'transparent',
+    border: `1px solid ${mode === m ? color : 'rgba(255,255,255,0.07)'}`,
+    borderRadius: 9, color: mode === m ? color : 'rgba(255,255,255,0.35)',
+    fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.82rem', letterSpacing: 2,
+    cursor: 'pointer', transition: 'all 0.2s',
+  })
+  const navBtn = (id: string, active: boolean, activeColor = '#D4AF37'): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', gap: 9, padding: '10px 18px',
+    background: active ? `${activeColor}12` : 'transparent', border: 'none',
+    borderLeft: `3px solid ${active ? activeColor : 'transparent'}`,
+    color: active ? activeColor : 'rgba(255,255,255,0.45)',
+    cursor: 'pointer', fontSize: '0.84rem',
+    transition: 'all 0.2s', textAlign: 'left' as const, width: '100%',
+  })
 
-  // ── Sidebar item ───────────────────────────────────────────────────────────
-  const SidebarItem = ({ id, label, icon }: { id: Section; label: string; icon: string }) => (
-    <button
-      onClick={() => { setSection(id); setSidebarOpen(false) }}
-      style={{
-        width: '100%', padding: '10px 16px', borderRadius: 8, cursor: 'pointer',
-        display: 'flex', alignItems: 'center', gap: 10, textAlign: 'left',
-        background: section === id ? 'rgba(212,175,55,0.15)' : 'transparent',
-        border: `1px solid ${section === id ? 'rgba(212,175,55,0.4)' : 'transparent'}`,
-        color: section === id ? '#D4AF37' : 'rgba(255,255,255,0.5)',
-        fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.95rem', letterSpacing: 2,
-        transition: 'all 0.2s',
-      }}
-      onMouseEnter={e => { if (section !== id) e.currentTarget.style.background = 'rgba(255,255,255,0.05)' }}
-      onMouseLeave={e => { if (section !== id) e.currentTarget.style.background = 'transparent' }}
-    >
-      <span style={{ fontSize: '1rem', width: 20, textAlign: 'center' }}>{icon}</span>
-      {label}
-    </button>
-  )
+  const mpAccent = '#818cf8'
 
   return (
-    <div style={{ minHeight: '100vh', background: '#0a0a0a', color: '#fff', display: 'flex', flexDirection: 'column' }}>
+    <div style={{ minHeight: '100vh', background: '#080808', color: '#fff', fontFamily: "'Montserrat', sans-serif", display: 'flex' }}>
+      <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Montserrat:wght@400;600&display=swap" rel="stylesheet" />
 
-      {/* ── Topbar ── */}
-      <div style={{
-        height: 52, borderBottom: '1px solid rgba(255,255,255,0.08)',
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '0 16px', background: '#0d0d0d', flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <button onClick={() => setSidebarOpen(s => !s)} style={{
-            background: 'none', border: 'none', color: 'rgba(255,255,255,0.5)',
-            cursor: 'pointer', fontSize: '1.2rem', padding: 4,
-          }}>☰</button>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.1rem', letterSpacing: 4, color: '#D4AF37' }}>
-            THE FLOOR · ADMIN
-          </span>
-          {saved && (
-            <span style={{ color: '#4ade80', fontSize: '0.75rem', letterSpacing: 1, animation: 'fadeIn 0.2s' }}>
-              ✓ Zapisano
-            </span>
+      {/* Sidebar */}
+      <aside style={{ width: 224, flexShrink: 0, background: 'rgba(255,255,255,0.02)', borderRight: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', height: '100vh', position: 'sticky', top: 0, overflow: 'auto' }}>
+        {/* Logo */}
+        <div style={{ padding: '20px 20px 14px' }}>
+          <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.4rem', letterSpacing: 6, color: '#D4AF37' }}>THE FLOOR</div>
+          <div style={{ fontSize: '0.6rem', letterSpacing: 3, color: 'rgba(255,255,255,0.2)', marginTop: 2 }}>PANEL ADMINA</div>
+        </div>
+
+        {/* Mode switcher */}
+        <div style={{ padding: '0 12px 14px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+            <button onClick={() => setMode('sp')}      style={modeBtn('sp', '#D4AF37')}>🎮 SINGLEPLAYER</button>
+            <button onClick={() => setMode('mp')}      style={modeBtn('mp', mpAccent)}>🌐 MULTIPLAYER</button>
+            <button onClick={() => setMode('players')} style={modeBtn('players', '#4ade80')}>👥 GRACZE</button>
+          </div>
+        </div>
+
+        {/* Sub-nav */}
+        <div style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: 6, flex: 1 }}>
+          {mode === 'sp' && SP_SECTIONS.map(s => (
+            <button key={s.id} onClick={() => setSpSect(s.id)} style={navBtn(s.id, spSect === s.id)}>
+              <span style={{ fontSize: '0.95rem' }}>{s.icon}</span>{s.label}
+            </button>
+          ))}
+          {mode === 'mp' && MP_SECTIONS.map(s => (
+            <button key={s.id} onClick={() => setMpSect(s.id)} style={navBtn(s.id, mpSect === s.id, mpAccent)}>
+              <span style={{ fontSize: '0.95rem' }}>{s.icon}</span>{s.label}
+            </button>
+          ))}
+          {mode === 'players' && (
+            <div style={{ padding: '10px 18px', fontSize: '0.84rem', color: '#4ade80', borderLeft: '3px solid #4ade80', background: 'rgba(74,222,128,0.06)' }}>
+              👥 Zarzadzanie graczami
+            </div>
           )}
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.72rem' }}>
-            {formatRemaining(sessionLeft)}
-          </span>
-          <Link to="/" style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', textDecoration: 'none', padding: '6px 12px', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 6 }}>
-            ← Gra
+
+        {/* Footer */}
+        <div style={{ padding: '12px 12px', borderTop: '1px solid rgba(255,255,255,0.06)', display: 'flex', flexDirection: 'column', gap: 7 }}>
+          {saved && <div style={{ padding: '7px 12px', background: 'rgba(74,222,128,0.1)', border: '1px solid rgba(74,222,128,0.3)', borderRadius: 8, color: '#4ade80', fontSize: '0.78rem' }}>✓ Zapisano</div>}
+          <div style={{ fontSize: '0.62rem', color: sessionColor, letterSpacing: 1, textAlign: 'center' as const }}>Sesja: {formatRemaining(sessionLeft)}</div>
+          <Link to="/" onClick={() => SoundEngine.stopBg(0)} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', background: 'rgba(212,175,55,0.08)', border: '1px solid rgba(212,175,55,0.25)', borderRadius: 8, color: '#D4AF37', textDecoration: 'none', fontSize: '0.8rem' }}>
+            🎮 Wyjscie do gry
           </Link>
-          <button onClick={handleLogout} style={{
-            background: 'none', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 6,
-            color: 'rgba(239,68,68,0.7)', fontSize: '0.8rem', cursor: 'pointer', padding: '6px 12px',
-          }}>Wyloguj</button>
+          <button onClick={handleLogout} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 12px', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 8, color: 'rgba(239,68,68,0.7)', cursor: 'pointer', fontSize: '0.8rem', fontFamily: "'Montserrat',sans-serif" }}>
+            🚪 Wyloguj
+          </button>
         </div>
-      </div>
+      </aside>
 
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      {/* Content */}
+      <main style={{ flex: 1, padding: '28px 32px', maxWidth: 820, overflow: 'auto' }}>
 
-        {/* ── Sidebar ── */}
-        <div style={{
-          width: sidebarOpen ? 220 : 0, overflow: 'hidden', transition: 'width 0.25s ease',
-          borderRight: '1px solid rgba(255,255,255,0.06)', background: '#0d0d0d',
-          display: 'flex', flexDirection: 'column', gap: 4, padding: sidebarOpen ? '16px 12px' : 0,
-          flexShrink: 0,
-        }}>
-          {SECTIONS.map(s => <SidebarItem key={s.id} {...s} />)}
-        </div>
 
-        {/* ── Tabs (always visible) ── */}
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-          <div style={{
-            display: 'flex', gap: 2, padding: '8px 12px', flexShrink: 0,
-            borderBottom: '1px solid rgba(255,255,255,0.06)', overflowX: 'auto',
-            scrollbarWidth: 'none',
-          }}>
-            {SECTIONS.map(s => (
-              <button key={s.id} onClick={() => setSection(s.id)} style={{
-                padding: '7px 14px', borderRadius: 7, cursor: 'pointer', flexShrink: 0,
-                background: section === s.id ? 'rgba(212,175,55,0.12)' : 'transparent',
-                border: `1px solid ${section === s.id ? 'rgba(212,175,55,0.4)' : 'transparent'}`,
-                color: section === s.id ? '#D4AF37' : 'rgba(255,255,255,0.4)',
-                fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.85rem', letterSpacing: 2,
-                transition: 'all 0.15s',
-              }}>
-                {s.icon} {s.label}
-              </button>
+        {/* SP sections */}
+        {mode === 'sp' && spSect === 'categories' && (
+          <CategoriesSection cats={cats} catsLoading={catsLoading} catName={catName} setCatName={setCatName}
+            catEmoji={catEmoji} setCatEmoji={setCatEmoji} catLang={catLang} setCatLang={setCatLang}
+            editing={editing} setEditing={setEditing} addCat={addCat} saveEditCat={saveEditCat}
+            removeCat={removeCat} inp={inp} bulkCatId={bulkCatId} setBulkCatId={setBulkCatId}
+            bulkFiles={bulkFiles} setBulkFiles={setBulkFiles} bulkProgress={bulkProgress}
+            bulkUploading={bulkUploading} bulkDone={bulkDone} setBulkDone={setBulkDone}
+            bulkError={bulkError} bulkRef={bulkRef} handleBulkUpload={handleBulkUpload} />
+        )}
+        {mode === 'sp' && spSect === 'board' && (
+          <BoardSection config={config} handleUpdate={handleUpdate} cats={cats}
+            tileCategories={tileCategories}
+            setTileCategory={(i: number, id: string) => setTileCategory(i, id, totalTiles)}
+            resetTileCategories={resetTileCategories} onFlash={flash} />
+        )}
+        {mode === 'sp' && spSect === 'gameplay_sp' && (
+          <div>
+            <SectionTitle icon="swords" title="Singleplayer - Rozgrywka" />
+            <InfoBox>Ustawienia dotycza wylacznie gry lokalnej (2 graczy, 1 ekran).</InfoBox>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {SP_GAMEPLAY.map(f => (
+                <NumberField key={f.key} label={f.label} desc={f.desc}
+                  value={config[f.key] as number} min={f.min} max={f.max} unit={f.unit}
+                  onChange={v => handleUpdate(f.key, v)} />
+              ))}
+            </div>
+          </div>
+        )}
+        {mode === 'sp' && spSect === 'players_sp' && (
+          <div>
+            <SectionTitle icon="people" title="Singleplayer - Gracze" />
+            <InfoBox>Nazwy i kolory graczy w trybie lokalnym. Zapisywane lokalnie.</InfoBox>
+            {([0, 1] as const).map(idx => (
+              <div key={idx} style={{padding:20,marginBottom:12,background:'rgba(255,255,255,0.03)',border:`1px solid ${players[idx].color}30`,borderRadius:12}}>
+                <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'1rem',letterSpacing:4,color:players[idx].color,marginBottom:14}}>GRACZ {idx + 1}</div>
+                <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
+                  <div style={{flex:1,minWidth:160}}>
+                    <label style={{display:'block',color:'rgba(255,255,255,0.4)',fontSize:'0.7rem',letterSpacing:1,marginBottom:5}}>NAZWA</label>
+                    <input value={players[idx].name} maxLength={16} style={inp}
+                      onChange={e => updatePlayer(idx, 'name', e.target.value.toUpperCase())} />
+                  </div>
+                  <div>
+                    <label style={{display:'block',color:'rgba(255,255,255,0.4)',fontSize:'0.7rem',letterSpacing:1,marginBottom:5}}>KOLOR</label>
+                    <div style={{display:'flex',alignItems:'center',gap:10}}>
+                      <input type="color" value={players[idx].color}
+                        onChange={e => updatePlayer(idx, 'color', e.target.value)}
+                        style={{width:44,height:38,padding:2,background:'rgba(255,255,255,0.05)',border:'1px solid rgba(255,255,255,0.12)',borderRadius:8,cursor:'pointer'}} />
+                      <span style={{color:'rgba(255,255,255,0.4)',fontSize:'0.8rem',fontFamily:'monospace'}}>{players[idx].color}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
             ))}
           </div>
-
-          {/* ── Content ── */}
-          <main style={{ flex: 1, overflow: 'auto', padding: '20px 16px' }}>
-            <div style={{ maxWidth: section === 'categories' ? '100%' : 680, margin: '0 auto' }}>
-
-              {/* ══ KATEGORIE ══ */}
-              {section === 'categories' && (
-                <CategoriesSection
-                  cats={cats} catName={catName} setCatName={setCatName}
-                  catEmoji={catEmoji} setCatEmoji={setCatEmoji}
-                  catLang={catLang} setCatLang={setCatLang}
-                  editing={editing} setEditing={setEditing}
-                  catsLoading={catsLoading}
-                  addCat={addCat} saveEditCat={saveEditCat} removeCat={removeCat}
-                  bulkCatId={bulkCatId} setBulkCatId={setBulkCatId}
-                  bulkFiles={bulkFiles} setBulkFiles={setBulkFiles}
-                  bulkProgress={bulkProgress} bulkUploading={bulkUploading}
-                  bulkDone={bulkDone} bulkError={bulkError}
-                  bulkRef={bulkRef} handleBulkUpload={handleBulkUpload}
-                />
-              )}
-
-              {/* ══ PLANSZA ══ */}
-              {section === 'board' && (
-                <BoardSection
-                  config={config} handleUpdate={handleUpdate}
-                  cats={cats} tileCategories={tileCategories}
-                  setTileCategory={(idx, catId) => setTileCategory(idx, catId, totalTiles)}
-                  resetTileCategories={resetTileCategories}
-                  onFlash={flash}
-                />
-              )}
-
-              {/* ══ ROZGRYWKA ══ */}
-              {section === 'gameplay' && (
-                <div>
-                  <SectionTitle icon="⚔️" title="Ustawienia pojedynku" />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 28 }}>
-                    {GAMEPLAY_FIELDS.map(f => (
-                      <NumberField key={f.key} label={f.label} desc={f.desc}
-                        value={config[f.key] as number} min={f.min} max={f.max} unit={f.unit}
-                        onChange={v => handleUpdate(f.key, v)} />
-                    ))}
-                  </div>
-
-                  <SectionTitle icon="🎤" title="Rozpoznawanie mowy" />
-
-                  {/* VOICE_PASS toggle */}
-                  <ToggleField
-                    label='Wykrywanie słowa "PAS" głosem'
-                    desc='Gdy włączone: powiedzenie "pas" przez mikrofon powoduje pasowanie. Wyłącz jeśli rozpoznawanie przypadkowo rejestruje "pas" podczas normalnej mowy. Mikrofon do odpowiedzi działa niezależnie od tej opcji.'
-                    value={config.VOICE_PASS !== 0}
-                    onChange={v => handleUpdate('VOICE_PASS', v ? 1 : 0)}
-                  />
-
-                  <div style={{ marginTop: 12, padding: '12px 16px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 10 }}>
-                    <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.8rem', lineHeight: 1.7 }}>
-                      💡 <strong style={{ color: 'rgba(255,255,255,0.7)' }}>Mikrofon i pas to dwie osobne funkcje:</strong><br />
-                      • <strong>Mikrofon</strong> — wykrywa odpowiedzi głosowe. Działa zawsze, niezależnie od tej opcji.<br />
-                      • <strong>Głosowy PAS</strong> — ta opcja. Wykrywa tylko słowo "pas/pass/dalej" z <strong>finalnych</strong> wyników (nie cząstkowych), co eliminuje podwójne pasowanie.<br />
-                      Wyłącz gdy zawodnicy przypadkowo mówią "pas" lub podobne słowa podczas odpowiedzi. Klawisz <kbd style={{ background: 'rgba(255,255,255,0.1)', padding: '1px 6px', borderRadius: 4, fontFamily: 'monospace' }}>P</kbd> zawsze działa.
-                    </div>
-                  </div>
-
-                  <div style={{ marginTop: 16 }}>
-                    <ToggleField
-                      label="Wskazówka pierwszej litery"
-                      desc="Po 10 sekundach braku odpowiedzi pokaż pierwszą literę odpowiedzi"
-                      value={config.SHOW_ANSWER_HINT === 1}
-                      onChange={v => handleUpdate('SHOW_ANSWER_HINT', v ? 1 : 0)}
-                    />
-                  </div>
-
-                  <div style={{ marginTop: 16 }}>
-                    <ToggleField
-                      label="Losowe rozmieszczenie kategorii"
-                      desc="Tasuj kategorie losowo przy każdej nowej grze"
-                      value={config.RANDOM_TILES === 1}
-                      onChange={v => handleUpdate('RANDOM_TILES', v ? 1 : 0)}
-                    />
-                  </div>
-                </div>
-              )}
-
-              {/* ══ GRACZE ══ */}
-              {section === 'players' && (
-                <div>
-                  <SectionTitle icon="👥" title="Ustawienia graczy" />
-                  {([0, 1] as const).map(idx => (
-                    <div key={idx} style={{
-                      padding: 20, marginBottom: 16,
-                      background: 'rgba(255,255,255,0.03)',
-                      border: `1px solid ${players[idx].color}30`, borderRadius: 12,
-                    }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-                        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 4, color: players[idx].color }}>
-                          GRACZ {idx + 1}
-                        </span>
-                        {playerSaving[idx] && (
-                          <span style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.72rem', letterSpacing: 1 }}>
-                            zapisywanie…
-                          </span>
-                        )}
-                      </div>
-                      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-                        <div style={{ flex: 1, minWidth: 160 }}>
-                          <label style={{ display: 'block', color: 'rgba(255,255,255,0.4)', fontSize: '0.72rem', letterSpacing: 1, marginBottom: 6 }}>NAZWA</label>
-                          <input
-                            value={players[idx].name}
-                            onChange={e => updatePlayer(idx, 'name', e.target.value.toUpperCase())}
-                            onBlur={e => handlePlayerUpdate(idx, 'name', e.target.value.toUpperCase())}
-                            style={inp} maxLength={16}
-                            placeholder={`GRACZ ${idx + 1}`}
-                          />
-                        </div>
-                        <div>
-                          <label style={{ display: 'block', color: 'rgba(255,255,255,0.4)', fontSize: '0.72rem', letterSpacing: 1, marginBottom: 6 }}>KOLOR</label>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                            <input type="color" value={players[idx].color}
-                              onChange={e => updatePlayer(idx, 'color', e.target.value)}
-                              onBlur={e => handlePlayerUpdate(idx, 'color', e.target.value)}
-                              style={{ width: 44, height: 38, padding: 2, background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)', borderRadius: 8, cursor: 'pointer' }} />
-                            <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', fontFamily: 'monospace' }}>{players[idx].color}</span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                  <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.75rem', lineHeight: 1.6 }}>
-                    💡 Nazwy i kolory zapisywane w Supabase (synchronizacja między urządzeniami) oraz lokalnie jako cache.<br />
-                    Zmiany są zapisywane po kliknięciu poza pole lub naciśnięciu Tab.
-                  </div>
-                </div>
-              )}
-
-              {/* ══ DŹWIĘK ══ */}
-              {section === 'display' && (
-                <div>
-                  <SectionTitle icon="🔊" title="Dźwięk" />
-
-                  {/* Muzyka tła */}
-                  <div style={{ marginBottom: 20 }}>
-                    <VolumeSlider
-                      label="Muzyka tła"
-                      desc="Głośność muzyki w tle podczas gry i w menu"
-                      icon="🎵"
-                      value={config.MUSIC_VOLUME ?? DEFAULTS.MUSIC_VOLUME}
-                      onChange={v => {
-                        update('MUSIC_VOLUME', v)
-                        SoundEngine.setMusicVolume(v)
-                      }}
-                      color="#D4AF37"
-                    />
-                  </div>
-
-                  {/* Efekty SFX */}
-                  <div style={{ marginBottom: 28 }}>
-                    <VolumeSlider
-                      label="Efekty dźwiękowe"
-                      desc="Głośność: beepy timera, poprawna odpowiedź, buzzer pasa, oklaski"
-                      icon="🔔"
-                      value={config.SFX_VOLUME ?? DEFAULTS.SFX_VOLUME}
-                      onChange={v => {
-                        update('SFX_VOLUME', v)
-                        SoundEngine.setSfxVolume(v)
-                      }}
-                      color="#818cf8"
-                    />
-                  </div>
-
-                  {/* Test dźwięku */}
-                  <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 28 }}>
-                    {[
-                      { label: '🔔 Beep 3', fn: () => SoundEngine.timerBeep(3) },
-                      { label: '🔔 Beep 2', fn: () => SoundEngine.timerBeep(2) },
-                      { label: '🔔 Beep 1', fn: () => SoundEngine.timerBeep(1) },
-                      { label: '✅ Correct', fn: () => SoundEngine.play('correct') },
-                      { label: '⏱ Buzzer',  fn: () => SoundEngine.play('buzzer')  },
-                      { label: '👏 Oklaski', fn: () => SoundEngine.play('applause') },
-                    ].map(({ label, fn }) => (
-                      <button key={label} onClick={fn} style={{
-                        padding: '7px 14px', borderRadius: 8, cursor: 'pointer', fontSize: '0.8rem',
-                        background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.12)',
-                        color: 'rgba(255,255,255,0.6)', transition: 'all 0.15s',
-                      }}
-                        onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.1)'}
-                        onMouseLeave={e => e.currentTarget.style.background = 'rgba(255,255,255,0.05)'}
-                      >{label}</button>
-                    ))}
-                  </div>
-
-                  <SectionTitle icon="🖥️" title="Wyświetlanie" />
-                  <ToggleField label="Statystyki widoczne domyślnie"
-                    desc="Pasek posiadania planszy widoczny od startu gry"
-                    value={config.SHOW_STATS === 1}
-                    onChange={v => handleUpdate('SHOW_STATS', v ? 1 : 0)} />
-                </div>
-              )}
-
-              {/* ══ ZAAWANSOWANE ══ */}
-              {section === 'advanced' && (
-                <div>
-                  <SectionTitle icon="⚙️" title="Wymiary planszy (ręczne)" />
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 12 }}>
-                    <NumberField label="Kolumny" desc="Nadpisuje preset kształtu" value={config.GRID_COLS} min={2} max={10} unit="" onChange={v => handleUpdate('GRID_COLS', v)} />
-                    <NumberField label="Wiersze" desc="Nadpisuje preset kształtu" value={config.GRID_ROWS} min={2} max={8}  unit="" onChange={v => handleUpdate('GRID_ROWS', v)} />
-                  </div>
-                  <div style={{ padding: '10px 16px', marginBottom: 28, background: 'rgba(251,146,60,0.06)', border: '1px solid rgba(251,146,60,0.2)', borderRadius: 10, color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem', lineHeight: 1.6 }}>
-                    ⚠️ Ręczne wymiary są nadpisywane przez preset z sekcji "Plansza".
-                  </div>
-
-                  <SectionTitle icon="🔄" title="Resetuj ustawienia" />
-                  <div style={{ padding: 20, background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: 12, marginBottom: 28 }}>
-                    <div style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.85rem', marginBottom: 8 }}>
-                      Przywróci wszystkie ustawienia gry do wartości domyślnych.
-                    </div>
-                    {!confirmReset ? (
-                      <button onClick={() => setConfirmReset(true)} style={{
-                        padding: '10px 24px', borderRadius: 8, border: '1px solid rgba(239,68,68,0.4)',
-                        background: 'rgba(239,68,68,0.08)', color: '#ef4444', cursor: 'pointer', fontSize: '0.85rem',
-                      }}>Reset do domyślnych</button>
-                    ) : (
-                      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-                        <span style={{ color: 'rgba(255,255,255,0.5)', fontSize: '0.85rem' }}>Na pewno?</span>
-                        <button onClick={handleReset} disabled={resetting} style={{
-                          padding: '8px 20px', borderRadius: 8, border: 'none',
-                          background: '#ef4444', color: '#fff', cursor: 'pointer', fontSize: '0.85rem',
-                        }}>{resetting ? 'Resetuję…' : '✓ Tak, resetuj'}</button>
-                        <button onClick={() => setConfirmReset(false)} style={{
-                          padding: '8px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)',
-                          background: 'none', color: 'rgba(255,255,255,0.5)', cursor: 'pointer', fontSize: '0.85rem',
-                        }}>Anuluj</button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* ══ PRZYSZŁE FUNKCJE ══ */}
-              {section === 'future' && <FutureSection />}
-
+        )}
+        {mode === 'sp' && spSect === 'display' && (
+          <div>
+            <SectionTitle icon="screen" title="Wyswietlanie i dzwiek" />
+            <ToggleField label="Statystyki domyslnie widoczne" desc="Pasek posiadania planszy od startu"
+              value={config.SHOW_STATS === 1} onChange={v => handleUpdate('SHOW_STATS', v ? 1 : 0)} />
+            <div style={{marginTop:10}}>
+              <NumberField label="Glosnosc" desc="Glosnosc efektow i muzyki (0-100%)"
+                value={config.SOUND_VOLUME} min={0} max={100} unit="%" onChange={v => handleUpdate('SOUND_VOLUME', v)} />
             </div>
-          </main>
-        </div>
-      </div>
-
-      <style>{`
-        @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
-      `}</style>
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// VOLUME SLIDER — dedykowany komponent z podglądem wizualnym
-// ══════════════════════════════════════════════════════════════════════════════
-function VolumeSlider({ label, desc, icon, value, onChange, color }: {
-  label: string; desc: string; icon: string
-  value: number; onChange: (v: number) => void; color: string
-}) {
-  return (
-    <div style={{ padding: 16, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 12 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
-        <div>
-          <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.9rem', fontWeight: 600, marginBottom: 2 }}>
-            {icon} {label}
-          </div>
-          <div style={{ color: 'rgba(255,255,255,0.35)', fontSize: '0.75rem' }}>{desc}</div>
-        </div>
-        <div style={{
-          minWidth: 48, textAlign: 'center', fontFamily: "'Bebas Neue', sans-serif",
-          fontSize: '1.4rem', letterSpacing: 2, color,
-        }}>{value}%</div>
-      </div>
-      <input
-        type="range" min={0} max={100} value={value}
-        onChange={e => onChange(Number(e.target.value))}
-        style={{ width: '100%', cursor: 'pointer', accentColor: color }}
-      />
-      <div style={{ marginTop: 6, height: 4, background: 'rgba(255,255,255,0.06)', borderRadius: 4, overflow: 'hidden' }}>
-        <div style={{ height: '100%', width: `${value}%`, background: `linear-gradient(90deg, ${color}80, ${color})`, borderRadius: 4, transition: 'width 0.1s' }} />
-      </div>
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// FUTURE SECTION — zaplanowane funkcje z roadmapą
-// ══════════════════════════════════════════════════════════════════════════════
-const FUTURE_FEATURES: {
-  icon: string; label: string; desc: string
-  status: 'planned' | 'in-progress' | 'ready'
-  category: string
-}[] = [
-  { icon: '🌐', label: 'Multiplayer online',   desc: 'Gra przez sieć w czasie rzeczywistym — Supabase Realtime lub WebSocket',      status: 'planned',     category: 'Sieć'         },
-  { icon: '📊', label: 'Historia gier',         desc: 'Zapisywanie wyników rund, statystyki wygranych, tabela liderów',               status: 'planned',     category: 'Statystyki'   },
-  { icon: '🏆', label: 'Tabela liderów',         desc: 'Ranking graczy z sumarycznymi wynikami sesji',                               status: 'planned',     category: 'Statystyki'   },
-  { icon: '🎨', label: 'Motywy wizualne',        desc: 'Ciemny / jasny / niestandardowy motyw planszy',                              status: 'planned',     category: 'UI'           },
-  { icon: '⏱️', label: 'Tryb rund',             desc: 'Gra na określoną liczbę rund (ROUND_TIMER + MAX_ROUNDS już w konfiguracji)',   status: 'in-progress', category: 'Rozgrywka'    },
-  { icon: '⚡', label: 'Power-upy',              desc: 'Specjalne umiejętności: dodatkowy czas, podgląd odpowiedzi, blokada pola',    status: 'planned',     category: 'Rozgrywka'    },
-  { icon: '🤖', label: 'Tryb solo (AI)',         desc: 'Gracz vs komputer z regulowanym poziomem trudności',                         status: 'planned',     category: 'Rozgrywka'    },
-  { icon: '📱', label: 'Aplikacja mobilna',      desc: 'PWA z pełną funkcjonalnością offline',                                       status: 'planned',     category: 'Platforma'    },
-  { icon: '🖨️', label: 'Eksport pytań',         desc: 'Eksport kategorii i pytań do CSV/PDF',                                       status: 'planned',     category: 'Narzędzia'    },
-  { icon: '🔑', label: 'Kody dostępu',           desc: 'Jednorazowe kody dla graczy zamiast hasła admina',                           status: 'planned',     category: 'Bezpieczeństwo'},
-  { icon: '🎤', label: 'Lepsze rozpoznawanie',   desc: 'Whisper API / modele lokalne dla większej dokładności',                      status: 'planned',     category: 'AI'           },
-  { icon: '🖼️', label: 'Generator obrazków AI', desc: 'Automatyczne pytania z obrazkami generowanymi przez AI',                     status: 'planned',     category: 'AI'           },
-]
-
-const STATUS_LABELS: Record<string, { label: string; color: string; bg: string }> = {
-  'planned':     { label: 'PLANOWANE',    color: 'rgba(255,255,255,0.3)',  bg: 'rgba(255,255,255,0.05)'  },
-  'in-progress': { label: 'W TRAKCIE',    color: 'rgba(251,191,36,0.8)',   bg: 'rgba(251,191,36,0.08)'   },
-  'ready':       { label: 'GOTOWE',       color: 'rgba(74,222,128,0.8)',   bg: 'rgba(74,222,128,0.08)'   },
-}
-
-function FutureSection() {
-  const categories = [...new Set(FUTURE_FEATURES.map(f => f.category))]
-
-  return (
-    <div>
-      <SectionTitle icon="🚀" title="Przyszłe funkcje" />
-      <div style={{ color: 'rgba(255,255,255,0.35)', fontSize: '0.8rem', lineHeight: 1.7, marginBottom: 24, padding: '12px 16px', background: 'rgba(99,102,241,0.06)', border: '1px solid rgba(99,102,241,0.15)', borderRadius: 10 }}>
-        📋 Roadmapa projektu. Funkcje oznaczone "W TRAKCIE" mają już przygotowaną infrastrukturę w kodzie
-        (typy, flagi, szkielety — patrz <code style={{ background: 'rgba(255,255,255,0.08)', padding: '1px 6px', borderRadius: 4 }}>types.ts: FeatureFlags</code>).
-      </div>
-
-      {categories.map(cat => (
-        <div key={cat} style={{ marginBottom: 24 }}>
-          <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.7rem', letterSpacing: 3, textTransform: 'uppercase', marginBottom: 8, paddingLeft: 4 }}>
-            {cat}
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {FUTURE_FEATURES.filter(f => f.category === cat).map((f, i) => {
-              const st = STATUS_LABELS[f.status]
-              return (
-                <div key={i} style={{
-                  padding: '12px 16px', background: 'rgba(255,255,255,0.02)',
-                  border: '1px solid rgba(255,255,255,0.06)', borderRadius: 10,
-                  display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12,
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
-                    <span style={{ fontSize: '1.2rem', flexShrink: 0, lineHeight: 1.3 }}>{f.icon}</span>
-                    <div>
-                      <div style={{ color: 'rgba(255,255,255,0.65)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 2 }}>{f.label}</div>
-                      <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem', lineHeight: 1.5 }}>{f.desc}</div>
-                    </div>
-                  </div>
-                  <span style={{
-                    padding: '3px 10px', borderRadius: 20, flexShrink: 0,
-                    background: st.bg, border: `1px solid ${st.color}30`,
-                    fontSize: '0.62rem', letterSpacing: 1, color: st.color,
-                  }}>{st.label}</span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      ))}
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// REUSABLE UI COMPONENTS
-// ══════════════════════════════════════════════════════════════════════════════
-
-function SectionTitle({ icon, title }: { icon: string; title: string }) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', gap: 8, marginBottom: 16,
-      paddingBottom: 10, borderBottom: '1px solid rgba(255,255,255,0.08)',
-    }}>
-      <span style={{ fontSize: '1rem' }}>{icon}</span>
-      <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 4, color: 'rgba(255,255,255,0.6)' }}>
-        {title}
-      </span>
-    </div>
-  )
-}
-
-function ToggleField({ label, desc, value, onChange }: {
-  label: string; desc: string; value: boolean; onChange: (v: boolean) => void
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-      padding: '12px 16px', background: 'rgba(255,255,255,0.03)',
-      border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10, marginBottom: 8,
-    }}>
-      <div>
-        <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 2 }}>{label}</div>
-        <div style={{ color: 'rgba(255,255,255,0.35)', fontSize: '0.75rem', lineHeight: 1.5 }}>{desc}</div>
-      </div>
-      <button onClick={() => onChange(!value)} style={{
-        width: 44, height: 24, borderRadius: 12, flexShrink: 0, position: 'relative', cursor: 'pointer',
-        background: value ? 'rgba(212,175,55,0.4)' : 'rgba(255,255,255,0.1)',
-        border: `1px solid ${value ? 'rgba(212,175,55,0.6)' : 'rgba(255,255,255,0.15)'}`,
-        transition: 'all 0.25s',
-      }}>
-        <div style={{
-          position: 'absolute', top: 3, left: value ? 22 : 3, width: 16, height: 16,
-          borderRadius: '50%', transition: 'all 0.25s',
-          background: value ? '#D4AF37' : 'rgba(255,255,255,0.4)',
-        }} />
-      </button>
-    </div>
-  )
-}
-
-function NumberField({ label, desc, value, min, max, unit, onChange }: {
-  label: string; desc: string; value: number; min: number; max: number; unit: string
-  onChange: (v: number) => void
-}) {
-  return (
-    <div style={{
-      display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
-      padding: '10px 16px', background: 'rgba(255,255,255,0.03)',
-      border: '1px solid rgba(255,255,255,0.07)', borderRadius: 10,
-    }}>
-      <div>
-        <div style={{ color: 'rgba(255,255,255,0.75)', fontSize: '0.85rem', fontWeight: 600, marginBottom: 2 }}>{label}</div>
-        <div style={{ color: 'rgba(255,255,255,0.35)', fontSize: '0.75rem' }}>{desc}</div>
-      </div>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-        <button onClick={() => onChange(Math.max(min, value - (unit === 'ms' ? 100 : 1)))} style={spinBtn}>−</button>
-        <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1.1rem', letterSpacing: 2, color: '#D4AF37', minWidth: 48, textAlign: 'center' }}>
-          {value}{unit}
-        </span>
-        <button onClick={() => onChange(Math.min(max, value + (unit === 'ms' ? 100 : 1)))} style={spinBtn}>+</button>
-      </div>
-    </div>
-  )
-}
-
-const spinBtn: React.CSSProperties = {
-  width: 30, height: 30, borderRadius: 6, cursor: 'pointer', fontSize: '1rem',
-  background: 'rgba(255,255,255,0.07)', border: '1px solid rgba(255,255,255,0.12)',
-  color: 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center',
-  flexShrink: 0,
-}
-
-function LangPicker({ value, onChange }: { value: SpeechLang; onChange: (l: SpeechLang) => void }) {
-  const opts: { v: SpeechLang; label: string; title: string }[] = [
-    { v: 'pl-PL', label: '🇵🇱', title: 'Polski' },
-    { v: 'en-US', label: '🇺🇸', title: 'English' },
-    { v: 'both',  label: '🌐', title: 'Oba języki' },
-  ]
-  return (
-    <div style={{ display: 'flex', gap: 3, flexShrink: 0 }}>
-      {opts.map(o => (
-        <button key={o.v} title={o.title} onClick={() => onChange(o.v)} style={{
-          width: 30, height: 30, borderRadius: 6, cursor: 'pointer',
-          background: value === o.v ? 'rgba(99,102,241,0.3)' : 'rgba(255,255,255,0.05)',
-          border: `1px solid ${value === o.v ? 'rgba(99,102,241,0.6)' : 'rgba(255,255,255,0.12)'}`,
-          fontSize: '0.85rem',
-        }}>{o.label}</button>
-      ))}
-    </div>
-  )
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// CATEGORIES SECTION
-// ══════════════════════════════════════════════════════════════════════════════
-function CategoriesSection({
-  cats, catName, setCatName, catEmoji, setCatEmoji, catLang, setCatLang,
-  editing, setEditing, catsLoading, addCat, saveEditCat, removeCat,
-  bulkCatId, setBulkCatId, bulkFiles, setBulkFiles, bulkProgress, bulkUploading,
-  bulkDone, bulkError, bulkRef, handleBulkUpload,
-}: {
-  cats: Category[]; catName: string; setCatName: (v: string) => void
-  catEmoji: string; setCatEmoji: (v: string) => void
-  catLang: SpeechLang; setCatLang: (v: SpeechLang) => void
-  editing: Category | null; setEditing: (c: Category | null) => void
-  catsLoading: boolean; addCat: () => void; saveEditCat: () => void; removeCat: (id: string) => void
-  bulkCatId: string; setBulkCatId: (v: string) => void
-  bulkFiles: File[]; setBulkFiles: (f: File[]) => void
-  bulkProgress: number; bulkUploading: boolean; bulkDone: boolean; bulkError: string | null
-  bulkRef: React.RefObject<HTMLInputElement>; handleBulkUpload: () => void
-}) {
-  const [search,  setSearch]  = useState('')
-  const [langFlt, setLangFlt] = useState<'all' | 'pl-PL' | 'en-US' | 'both'>('all')
-  const [sortCat, setSortCat] = useState<'az' | 'za' | 'newest'>('newest')
-  const [page,    setPage]    = useState(1)
-  const PAGE_SIZE = 10
-
-  // Reset page on filter change
-  useEffect(() => { setPage(1) }, [search, langFlt, sortCat])
-
-  const filtered = useMemo(() => {
-    let r = [...cats]
-    if (search.trim()) r = r.filter(c => c.name.toLowerCase().includes(search.toLowerCase()))
-    if (langFlt !== 'all') r = r.filter(c => (c.lang ?? 'pl-PL') === langFlt)
-    if (sortCat === 'az') r.sort((a, b) => a.name.localeCompare(b.name, 'pl'))
-    else if (sortCat === 'za') r.sort((a, b) => b.name.localeCompare(a.name, 'pl'))
-    // newest = default order from Supabase (created_at desc)
-    return r
-  }, [cats, search, langFlt, sortCat])
-
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
-  const safePage   = Math.min(page, totalPages)
-  const paged      = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE)
-
-  const highlight = (text: string) => {
-    if (!search.trim()) return <>{text}</>
-    const idx = text.toLowerCase().indexOf(search.toLowerCase())
-    if (idx === -1) return <>{text}</>
-    return <>{text.slice(0, idx)}<mark style={{ background: 'rgba(212,175,55,0.3)', color: '#fff', borderRadius: 2, padding: '0 1px' }}>{text.slice(idx, idx + search.length)}</mark>{text.slice(idx + search.length)}</>
-  }
-
-  return (
-    <div>
-      <SectionTitle icon="📂" title="Kategorie" />
-
-      {/* ── Dwukolumnowy layout: lewa = kategorie, prawa = bulk upload ── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr minmax(260px, 320px)', gap: 24, alignItems: 'start' }}>
-      <div>{/* LEWA KOLUMNA */}
-
-      {/* Dodaj kategorię */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        <input value={catName} onChange={e => setCatName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && addCat()}
-          placeholder="Nazwa kategorii" style={{ ...inp, flex: 1, minWidth: 140 }} />
-        <input value={catEmoji} onChange={e => setCatEmoji(e.target.value)}
-          placeholder="🎯" style={{ ...inp, width: 58, textAlign: 'center', fontSize: '1.3rem', padding: '8px 4px' }} maxLength={2} />
-        <LangPicker value={catLang} onChange={setCatLang} />
-        <button onClick={addCat} style={{
-          padding: '0 20px', borderRadius: 8, cursor: 'pointer', height: 42,
-          background: 'linear-gradient(135deg, #D4AF37, #FFD700)', color: '#000',
-          border: 'none', fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.9rem', letterSpacing: 2,
-        }}>DODAJ</button>
-      </div>
-
-      {/* ── Toolbar ── */}
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center', marginBottom: 10 }}>
-        {/* Szukaj */}
-        <div style={{ position: 'relative', flex: 1, minWidth: 180 }}>
-          <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: 'rgba(255,255,255,0.3)', pointerEvents: 'none', fontSize: '0.85rem' }}>🔍</span>
-          <input value={search} onChange={e => setSearch(e.target.value)}
-            placeholder="Szukaj kategorii…"
-            style={{ ...inp, paddingLeft: 32, paddingRight: search ? 32 : 12, fontSize: '0.85rem', padding: '8px 32px' }} />
-          {search && (
-            <button onClick={() => setSearch('')} style={{ position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '0.9rem' }}>✕</button>
-          )}
-        </div>
-        {/* Filtr języka */}
-        {(['all','pl-PL','en-US','both'] as const).map(l => (
-          <button key={l} onClick={() => setLangFlt(l)} style={{
-            padding: '6px 11px', borderRadius: 20, cursor: 'pointer', fontSize: '0.72rem', whiteSpace: 'nowrap',
-            background: langFlt === l ? 'rgba(99,102,241,0.2)' : 'rgba(255,255,255,0.04)',
-            border: `1px solid ${langFlt === l ? 'rgba(99,102,241,0.5)' : 'rgba(255,255,255,0.1)'}`,
-            color: langFlt === l ? '#818cf8' : 'rgba(255,255,255,0.4)',
-          }}>{l === 'all' ? 'Wszystkie' : l === 'both' ? '🌐 Oba' : l === 'pl-PL' ? '🇵🇱 PL' : '🇺🇸 EN'}</button>
-        ))}
-        {/* Sortowanie */}
-        <select value={sortCat} onChange={e => setSortCat(e.target.value as any)} style={{
-          ...inp, width: 'auto', fontSize: '0.8rem', padding: '7px 28px 7px 10px', cursor: 'pointer',
-          appearance: 'none',
-          backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='rgba(255,255,255,0.3)'/%3E%3C/svg%3E")`,
-          backgroundRepeat: 'no-repeat', backgroundPosition: 'right 8px center',
-        }}>
-          <option value="newest">🕐 Najnowsze</option>
-          <option value="az">🔤 A → Z</option>
-          <option value="za">🔤 Z → A</option>
-        </select>
-      </div>
-
-      {/* Stat */}
-      <div style={{ color: 'rgba(255,255,255,0.25)', fontSize: '0.72rem', marginBottom: 10 }}>
-        {filtered.length === cats.length
-          ? `${cats.length} kategorii`
-          : `${filtered.length} z ${cats.length} kategorii`}
-        {totalPages > 1 && ` · strona ${safePage}/${totalPages}`}
-      </div>
-
-      {/* Lista */}
-      {catsLoading ? (
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.2)', padding: '40px 0' }}>Ładowanie…</div>
-      ) : paged.length === 0 ? (
-        <div style={{ textAlign: 'center', color: 'rgba(255,255,255,0.18)', padding: '32px 0', fontSize: '0.85rem', border: '1px dashed rgba(255,255,255,0.07)', borderRadius: 10 }}>
-          {cats.length === 0 ? 'Brak kategorii.' : '🔍 Brak wyników — zmień filtry.'}
-        </div>
-      ) : paged.map(cat => (
-        <div key={cat.id} style={{
-          padding: '12px 16px', marginBottom: 6,
-          background: editing?.id === cat.id ? 'rgba(212,175,55,0.06)' : 'rgba(255,255,255,0.03)',
-          border: `1px solid ${editing?.id === cat.id ? 'rgba(212,175,55,0.3)' : 'rgba(255,255,255,0.07)'}`,
-          borderRadius: 10,
-        }}>
-          {editing?.id === cat.id ? (
-            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-              <input value={editing.emoji} onChange={e => setEditing({ ...editing, emoji: e.target.value })}
-                style={{ ...inp, width: 52, textAlign: 'center', fontSize: '1.2rem', padding: '6px 2px' }} maxLength={2} />
-              <input value={editing.name} onChange={e => setEditing({ ...editing, name: e.target.value })}
-                style={{ ...inp, flex: 1, minWidth: 120 }} autoFocus />
-              <LangPicker value={editing.lang ?? 'pl-PL'} onChange={l => setEditing({ ...editing, lang: l })} />
-              <button onClick={saveEditCat} style={{ padding: '7px 14px', borderRadius: 7, background: '#D4AF37', color: '#000', border: 'none', cursor: 'pointer', fontSize: '0.8rem', fontWeight: 700 }}>Zapisz</button>
-              <button onClick={() => setEditing(null)} style={{ padding: '7px 14px', borderRadius: 7, background: 'rgba(255,255,255,0.07)', color: 'rgba(255,255,255,0.5)', border: '1px solid rgba(255,255,255,0.12)', cursor: 'pointer', fontSize: '0.8rem' }}>Anuluj</button>
-            </div>
-          ) : (
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, flex: 1, minWidth: 0 }}>
-                <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>{cat.emoji}</span>
-                <span style={{ color: 'rgba(255,255,255,0.8)', fontSize: '0.9rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{highlight(cat.name)}</span>
-                <span style={{ fontSize: '0.7rem', padding: '2px 7px', borderRadius: 20, background: 'rgba(99,102,241,0.12)', color: 'rgba(129,140,248,0.8)', border: '1px solid rgba(99,102,241,0.2)', flexShrink: 0 }}>
-                  {cat.lang ?? 'pl-PL'}
-                </span>
+            <div style={{marginTop:8,padding:'12px 16px',background:'rgba(255,255,255,0.02)',borderRadius:10,border:'1px solid rgba(255,255,255,0.07)'}}>
+              <div style={{height:6,background:'rgba(255,255,255,0.08)',borderRadius:4,overflow:'hidden'}}>
+                <div style={{height:'100%',width:`${config.SOUND_VOLUME}%`,background:'linear-gradient(90deg,#D4AF37,#FFD700)',borderRadius:4,transition:'width 0.3s'}} />
               </div>
-              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                <Link to={`/admin/categories/${cat.id}/questions`} style={{ padding: '5px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.5)', fontSize: '0.75rem', textDecoration: 'none', letterSpacing: 0.5 }}>
-                  Pytania
-                </Link>
-                <button onClick={() => setEditing(cat)} style={{ padding: '5px 10px', borderRadius: 6, background: 'rgba(255,255,255,0.04)', border: 'none', color: 'rgba(255,255,255,0.35)', cursor: 'pointer', fontSize: '0.75rem' }}>Edytuj</button>
-                <button onClick={() => removeCat(cat.id)} style={{ padding: '5px 10px', borderRadius: 6, background: 'rgba(239,68,68,0.06)', border: 'none', color: 'rgba(239,68,68,0.5)', cursor: 'pointer', fontSize: '0.75rem' }}>Usuń</button>
+              <div style={{textAlign:'center',color:'#D4AF37',fontSize:'0.72rem',marginTop:5}}>{config.SOUND_VOLUME}%</div>
+            </div>
+          </div>
+        )}
+        {mode === 'sp' && spSect === 'advanced' && (
+          <div>
+            <SectionTitle icon="gear" title="Wymiary planszy (reczne)" />
+            <div style={{display:'flex',flexDirection:'column',gap:8,marginBottom:18}}>
+              <NumberField label="Kolumny" desc="Nadpisuje preset" value={config.GRID_COLS} min={2} max={10} unit="" onChange={v => handleUpdate('GRID_COLS', v)} />
+              <NumberField label="Wiersze" desc="Nadpisuje preset" value={config.GRID_ROWS} min={2} max={8} unit="" onChange={v => handleUpdate('GRID_ROWS', v)} />
+            </div>
+            <InfoBox color="#fb923c">Reczne wymiary sa nadpisywane przy zmianie presetu w sekcji Plansza.</InfoBox>
+            <SectionTitle icon="reset" title="Reset ustawien" />
+            <div style={{padding:18,background:'rgba(239,68,68,0.04)',border:'1px solid rgba(239,68,68,0.15)',borderRadius:12}}>
+              <div style={{color:'rgba(255,255,255,0.5)',fontSize:'0.85rem',marginBottom:12}}>Przywroci wszystkie ustawienia do wartosci domyslnych.</div>
+              {!confirmResetAll ? (
+                <button onClick={() => setConfirmResetAll(true)} style={{padding:'8px 18px',borderRadius:8,background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.3)',color:'#f87171',cursor:'pointer',fontSize:'0.85rem',fontFamily:"'Montserrat',sans-serif"}}>
+                  Reset do domyslnych
+                </button>
+              ) : (
+                <div style={{display:'flex',gap:10,alignItems:'center'}}>
+                  <span style={{color:'#f87171',fontSize:'0.85rem'}}>Na pewno?</span>
+                  <button onClick={handleResetAll} disabled={resetting} style={{padding:'8px 14px',borderRadius:8,background:'rgba(239,68,68,0.2)',border:'1px solid #ef4444',color:'#f87171',cursor:'pointer',fontSize:'0.85rem',fontFamily:"'Montserrat',sans-serif"}}>
+                    {resetting ? 'Resetowanie...' : 'TAK'}
+                  </button>
+                  <button onClick={() => setConfirmResetAll(false)} style={{padding:'8px 14px',borderRadius:8,background:'transparent',border:'1px solid rgba(255,255,255,0.1)',color:'rgba(255,255,255,0.4)',cursor:'pointer',fontSize:'0.85rem',fontFamily:"'Montserrat',sans-serif"}}>Anuluj</button>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {mode === 'mp' && mpSect === 'gameplay_mp' && (
+          <div>
+            <SectionTitle icon='globe' title='Multiplayer - Rozgrywka Online' />
+            <div style={{padding:'10px 14px',background:'rgba(129,140,248,0.06)',border:'1px solid rgba(129,140,248,0.2)',borderRadius:10,marginBottom:16,fontSize:'0.8rem',color:'rgba(255,255,255,0.4)'}}>
+              Ustawienia dotycza wylacznie trybu online. Niezalezne od SP.
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:8}}>
+              {MP_GAMEPLAY.map(f => (
+                <NumberField key={f.key} label={f.label} desc={f.desc}
+                  value={(config as any)[f.key] ?? (DEFAULTS as any)[f.key] ?? 60}
+                  min={f.min} max={f.max} unit={f.unit}
+                  onChange={v => handleUpdate(f.key, v)} accentColor='#818cf8' />
+              ))}
+            </div>
+          </div>
+        )}
+        {mode === 'mp' && mpSect === 'xp_config' && (
+          <div>
+            <SectionTitle icon='trophy' title='System XP i Rankingow' />
+            <div style={{padding:'10px 14px',background:'rgba(129,140,248,0.06)',border:'1px solid rgba(129,140,248,0.2)',borderRadius:10,marginBottom:16,fontSize:'0.8rem',color:'rgba(255,255,255,0.4)'}}>
+              Punkty przyznawane po kazdej zakonczej grze online. Wplywaja na ranking i poziom.
+            </div>
+            <div style={{display:'flex',flexDirection:'column',gap:10,marginBottom:24}}>
+              {XP_FIELDS.map(f => (
+                <XPField key={f.key} label={f.label} desc={f.desc} color={f.color}
+                  value={(config as any)[f.key] ?? (DEFAULTS as any)[f.key] ?? 50}
+                  min={f.min} max={f.max}
+                  onChange={v => handleUpdate(f.key, v)} />
+              ))}
+            </div>
+            <div style={{padding:'16px 20px',background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12}}>
+              <div style={{fontSize:'0.68rem',letterSpacing:2,color:'rgba(255,255,255,0.3)',marginBottom:10}}>PODGLAD XP</div>
+              <div style={{display:'flex',gap:10,flexWrap:'wrap' as const}}>
+                {[
+                  {label:'10 wygranych',xp:10 * ((config as any).MP_XP_WIN ?? 50),color:'#4ade80'},
+                  {label:'10 remisow',xp:10 * ((config as any).MP_XP_DRAW ?? 20),color:'#facc15'},
+                  {label:'10 porazek',xp:10 * ((config as any).MP_XP_LOSS ?? 10),color:'#fb923c'},
+                ].map(({label,xp,color}) => (
+                  <div key={label} style={{flex:1,minWidth:130,padding:'12px 14px',background:color+'08',border:'1px solid '+color+'22',borderRadius:10}}>
+                    <div style={{fontSize:'0.68rem',color:'rgba(255,255,255,0.4)',marginBottom:4}}>{label}</div>
+                    <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'1.4rem',letterSpacing:3,color}}>+{xp} XP</div>
+                    <div style={{fontSize:'0.7rem',color:'rgba(255,255,255,0.3)'}}>Poziom {Math.floor(xp / 100) + 1}</div>
+                  </div>
+                ))}
               </div>
             </div>
-          )}
-        </div>
-      ))}
-
-      {/* Paginacja */}
-      {totalPages > 1 && (
-        <div style={{ display: 'flex', justifyContent: 'center', gap: 6, marginTop: 14, flexWrap: 'wrap' }}>
-          <CatPageBtn label="‹" disabled={safePage === 1} onClick={() => setPage(p => p - 1)} />
-          {Array.from({ length: totalPages }, (_, i) => i + 1).map(n => (
-            <button key={n} onClick={() => setPage(n)} style={{
-              width: 32, height: 32, borderRadius: 7, cursor: 'pointer', fontSize: '0.78rem',
-              background: n === safePage ? 'rgba(212,175,55,0.2)' : 'rgba(255,255,255,0.04)',
-              border: `1px solid ${n === safePage ? 'rgba(212,175,55,0.5)' : 'rgba(255,255,255,0.1)'}`,
-              color: n === safePage ? '#D4AF37' : 'rgba(255,255,255,0.5)',
-            }}>{n}</button>
-          ))}
-          <CatPageBtn label="›" disabled={safePage === totalPages} onClick={() => setPage(p => p + 1)} />
-        </div>
-      )}
-
-      </div>{/* koniec lewej kolumny */}
-
-        {/* ── PRAWA KOLUMNA: Masowy upload ── */}
-        <div style={{ position: 'sticky', top: 16 }}>
-          <div style={{ padding: 20, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: 12 }}>
-            <SectionTitle icon="📤" title="Masowy upload zdjęć" />
-            <select value={bulkCatId} onChange={e => setBulkCatId(e.target.value)} style={{ ...inp, marginBottom: 10 }}>
-              <option value="">— Wybierz kategorię —</option>
-              {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
-            </select>
-            <input ref={bulkRef} type="file" accept="image/*" multiple onChange={e => setBulkFiles(Array.from(e.target.files ?? []))} style={{ ...inp, padding: '8px 10px', marginBottom: 10, cursor: 'pointer' }} />
-            {bulkFiles.length > 0 && (
-              <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem', marginBottom: 10 }}>
-                {bulkFiles.length} plików — odpowiedź = nazwa pliku (bez rozszerzenia)
-              </div>
-            )}
-            {bulkUploading && (
-              <div style={{ marginBottom: 10, height: 4, background: 'rgba(255,255,255,0.1)', borderRadius: 4 }}>
-                <div style={{ height: '100%', width: `${bulkProgress}%`, background: 'linear-gradient(90deg, #D4AF37, #FFD700)', borderRadius: 4, transition: 'width .3s' }} />
-              </div>
-            )}
-            {bulkDone  && <div style={{ color: '#4ade80', fontSize: '0.8rem', marginBottom: 8 }}>✓ Wysłano pomyślnie</div>}
-            {bulkError && <div style={{ color: '#f87171', fontSize: '0.8rem', marginBottom: 8 }}>⚠️ {bulkError}</div>}
-            <button onClick={handleBulkUpload} disabled={!bulkCatId || bulkFiles.length === 0 || bulkUploading} style={{
-              width: '100%', padding: '10px 20px', borderRadius: 8,
-              background: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.06)' : 'linear-gradient(135deg, #D4AF37, #FFD700)',
-              color: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'rgba(255,255,255,0.3)' : '#000',
-              border: 'none', cursor: (!bulkCatId || bulkFiles.length === 0 || bulkUploading) ? 'default' : 'pointer',
-              fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 3, transition: 'all 0.2s',
-            }}>
-              {bulkUploading ? `WYSYŁANIE… ${bulkProgress}%` : `📤 WYŚLIJ ${bulkFiles.length > 0 ? bulkFiles.length + ' ZDJĘĆ' : ''}`}
-            </button>
           </div>
-        </div>
-      </div>{/* koniec gridu */}
+        )}
+        {mode === 'mp' && mpSect === 'history' && (
+          <GameHistorySection history={history} loading={histLoading} onLoad={loadHistory} />
+        )}
+
+        {mode === 'players' && <AdminPlayers inp={inp} />}
+      </main>
     </div>
   )
 }
 
-function CatPageBtn({ label, disabled, onClick }: { label: string; disabled: boolean; onClick: () => void }) {
+function SectionTitle({icon, title}) {
+  return (<div style={{display:'flex',alignItems:'center',gap:10,marginBottom:16,paddingBottom:12,borderBottom:'1px solid rgba(255,255,255,0.06)'}}><span>{icon}</span><span style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'1.1rem',letterSpacing:4,color:'rgba(255,255,255,0.7)'}}>{title}</span></div>)
+}
+function InfoBox({children, color}) {
+  const c = color || '#D4AF37'
+  return <div style={{padding:'10px 14px',background:c+'08',border:'1px solid '+c+'25',borderRadius:10,marginBottom:16,fontSize:'0.8rem',color:'rgba(255,255,255,0.4)'}}>{children}</div>
+}
+function NumberField({label,desc,value,min,max,unit,onChange,accentColor}) {
+  const ac = accentColor || '#D4AF37'
   return (
-    <button onClick={onClick} disabled={disabled} style={{
-      width: 32, height: 32, borderRadius: 7, cursor: disabled ? 'default' : 'pointer',
-      background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
-      color: disabled ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.55)', fontSize: '1rem',
-    }}>{label}</button>
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 16px',background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,gap:12,flexWrap:'wrap'}}>
+      <div style={{minWidth:140}}><div style={{color:'#C0C0C0',fontSize:'0.88rem',marginBottom:2}}>{label}</div><div style={{color:'rgba(255,255,255,0.25)',fontSize:'0.72rem'}}>{desc}</div></div>
+      <div style={{display:'flex',alignItems:'center',gap:8,flexShrink:0}}>
+        <button onClick={()=>onChange(Math.max(min,value-1))} style={{width:28,height:28,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,color:'#fff',cursor:'pointer'}}>-</button>
+        <input type="number" value={value} min={min} max={max} onChange={e=>onChange(Number(e.target.value))} style={{width:68,background:'rgba(255,255,255,0.06)',border:'1px solid '+ac+'44',borderRadius:8,padding:'6px 8px',color:ac,fontFamily:'monospace',fontSize:'1rem',textAlign:'center',outline:'none',boxSizing:'border-box'}} />
+        {unit && <span style={{color:'rgba(255,255,255,0.3)',fontSize:'0.75rem'}}>{unit}</span>}
+        <button onClick={()=>onChange(Math.min(max,value+1))} style={{width:28,height:28,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,color:'#fff',cursor:'pointer'}}>+</button>
+      </div>
+    </div>
+  )
+}
+function ToggleField({label,desc,value,onChange}) {
+  return (
+    <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',padding:'14px 16px',background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:10,marginBottom:8,cursor:'pointer',gap:12}} onClick={()=>onChange(!value)}>
+      <div><div style={{color:'#C0C0C0',fontSize:'0.88rem',marginBottom:2}}>{label}</div><div style={{color:'rgba(255,255,255,0.25)',fontSize:'0.72rem'}}>{desc}</div></div>
+      <div style={{width:44,height:24,borderRadius:12,background:value?'rgba(212,175,55,0.4)':'rgba(255,255,255,0.1)',position:'relative',transition:'all 0.25s',flexShrink:0}}>
+        <div style={{position:'absolute',top:3,left:value?22:3,width:16,height:16,borderRadius:'50%',background:value?'#D4AF37':'rgba(255,255,255,0.4)',transition:'all 0.25s'}} />
+      </div>
+    </div>
+  )
+}
+function LangPicker({value, onChange}) {
+  const opts=[{v:'pl-PL',label:'PL'},{v:'en-US',label:'EN'},{v:'both',label:'MIX'}]
+  return (<div style={{display:'flex',gap:4,flexShrink:0}}>{opts.map(o=>(<button key={o.v} onClick={()=>onChange(o.v)} style={{padding:'6px 10px',cursor:'pointer',borderRadius:8,background:value===o.v?'rgba(99,102,241,0.3)':'rgba(255,255,255,0.05)',border:'1px solid '+(value===o.v?'rgba(99,102,241,0.6)':'rgba(255,255,255,0.1)'),color:value===o.v?'#818cf8':'rgba(255,255,255,0.5)',fontSize:'0.78rem'}}>{o.label}</button>))}</div>)
+}
+function XPField({label,desc,value,min,max,onChange,color}) {
+  const pct=Math.min(100,Math.round(((value-min)/Math.max(1,max-min))*100))
+  return (
+    <div style={{padding:'14px 18px',background:color+'06',border:'1px solid '+color+'22',borderRadius:12}}>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'flex-start',marginBottom:10}}>
+        <div><div style={{color:'#fff',fontSize:'0.88rem',marginBottom:2}}>{label}</div><div style={{color:'rgba(255,255,255,0.3)',fontSize:'0.72rem'}}>{desc}</div></div>
+        <div style={{display:'flex',alignItems:'center',gap:8}}>
+          <button onClick={()=>onChange(Math.max(min,value-5))} style={{width:28,height:28,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,color:'#fff',cursor:'pointer'}}>-</button>
+          <input type="number" value={value} min={min} max={max} onChange={e=>onChange(Number(e.target.value))} style={{width:60,background:'rgba(255,255,255,0.06)',border:'1px solid '+color+'44',borderRadius:8,padding:'6px 8px',color,fontFamily:'monospace',fontSize:'1rem',textAlign:'center',outline:'none'}} />
+          <span style={{color:'rgba(255,255,255,0.4)',fontSize:'0.75rem'}}>XP</span>
+          <button onClick={()=>onChange(Math.min(max,value+5))} style={{width:28,height:28,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',borderRadius:6,color:'#fff',cursor:'pointer'}}>+</button>
+        </div>
+      </div>
+      <div style={{height:4,background:'rgba(255,255,255,0.06)',borderRadius:4,overflow:'hidden'}}>
+        <div style={{height:'100%',width:pct+'%',background:color,borderRadius:4,transition:'width 0.3s'}} />
+      </div>
+    </div>
   )
 }
 
-// ══════════════════════════════════════════════════════════════════════════════
-// BOARD SECTION
-// ══════════════════════════════════════════════════════════════════════════════
-function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCategory, resetTileCategories, onFlash }: {
-  config: GameConfig; handleUpdate: (k: keyof GameConfig, v: number) => Promise<void>
-  cats: Category[]; tileCategories: string[]
-  setTileCategory: (idx: number, catId: string) => Promise<void>
-  resetTileCategories: () => Promise<void>; onFlash: () => void
-}) {
-  const preset = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-  const { cols, rows } = preset
-  const total  = cols * rows
-
-  const [saving, setSaving]             = useState<number | null>(null)
+function BoardSection({config, handleUpdate, cats, tileCategories, setTileCategory, resetTileCategories, onFlash}: any) {
   const [confirmReset, setConfirmReset] = useState(false)
-
-  const handleTileCat = async (tileIdx: number, catId: string) => {
-    setSaving(tileIdx)
-    await setTileCategory(tileIdx, catId)
-    setSaving(null); onFlash()
-  }
-
-  const customCount = tileCategories.filter(id => id !== '' && id !== undefined).length
-
+  const preset = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
+  const totalTiles = preset.cols * preset.rows
+  const handleResetMap = async () => { await resetTileCategories(); setConfirmReset(false); onFlash() }
   return (
     <div>
-      <SectionTitle icon="📐" title="Kształt planszy" />
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(158px, 1fr))', gap: 10, marginBottom: 28 }}>
-        {Object.entries(BOARD_PRESETS).map(([val, p]) => (
-          <button key={val} onClick={() => handleUpdate('BOARD_SHAPE', Number(val))} style={{
-            padding: '14px 16px', borderRadius: 10, cursor: 'pointer', textAlign: 'center',
-            background: config.BOARD_SHAPE === Number(val) ? 'rgba(212,175,55,0.12)' : 'rgba(255,255,255,0.03)',
-            border: `1px solid ${config.BOARD_SHAPE === Number(val) ? 'rgba(212,175,55,0.5)' : 'rgba(255,255,255,0.08)'}`,
-            color: config.BOARD_SHAPE === Number(val) ? '#D4AF37' : 'rgba(255,255,255,0.5)',
-            transition: 'all 0.15s',
-          }}>
-            <div style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.95rem', letterSpacing: 2, marginBottom: 2 }}>{p.label}</div>
-            <div style={{ fontSize: '0.7rem', opacity: 0.5 }}>{p.cols}×{p.rows} = {p.cols * p.rows} pól</div>
-          </button>
-        ))}
+      <SectionTitle icon='Plansza' title='Konfiguracja Planszy' />
+      <div style={{marginBottom:18}}>
+        <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.72rem',letterSpacing:1,marginBottom:10}}>KSZTALT PLANSZY</div>
+        <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:8}}>
+          {Object.entries(BOARD_PRESETS).map(([key, p]: [string, any]) => (
+            <button key={key} onClick={() => handleUpdate('BOARD_SHAPE', Number(key))} style={{padding:'10px 8px',borderRadius:10,cursor:'pointer',background:config.BOARD_SHAPE===Number(key)?'rgba(212,175,55,0.15)':'rgba(255,255,255,0.03)',border:'1px solid '+(config.BOARD_SHAPE===Number(key)?'#D4AF37':'rgba(255,255,255,0.08)'),color:config.BOARD_SHAPE===Number(key)?'#D4AF37':'rgba(255,255,255,0.45)',fontSize:'0.78rem',letterSpacing:0.5,lineHeight:1.4}}>
+              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'1rem',letterSpacing:3,marginBottom:2}}>{p.cols}x{p.rows}</div>
+              <div>{p.label}</div>
+            </button>
+          ))}
+        </div>
       </div>
-
-      <SectionTitle icon="🗺️" title="Przypisanie kategorii do pól" />
-      {customCount > 0 && (
-        <div style={{ marginBottom: 12, color: 'rgba(212,175,55,0.7)', fontSize: '0.78rem', letterSpacing: 1 }}>
-          {customCount}/{total} pól ma własną kategorię
+      <ToggleField label='Losowe kategorie kafelkow' desc='Kazda gra losowo przypisuje kategorie do pol' value={config.RANDOM_TILES === 1} onChange={v => handleUpdate('RANDOM_TILES', v ? 1 : 0)} />
+      {config.RANDOM_TILES === 0 && cats.length > 0 && (
+        <div style={{marginTop:14}}>
+          <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.72rem',letterSpacing:1,marginBottom:8}}>PRZYPISANIE KATEGORII</div>
+          <div style={{display:'grid',gridTemplateColumns:'repeat('+preset.cols+',1fr)',gap:6,marginBottom:10}}>
+            {Array.from({length:totalTiles}).map((_,i) => (
+              <select key={i} value={tileCategories[i]||''} onChange={e=>setTileCategory(i,e.target.value)} style={{background:tileCategories[i]?'rgba(212,175,55,0.1)':'rgba(255,255,255,0.04)',border:'1px solid '+(tileCategories[i]?'rgba(212,175,55,0.4)':'rgba(255,255,255,0.1)'),borderRadius:8,padding:'6px 4px',color:'#fff',outline:'none',fontSize:'0.68rem',width:'100%',cursor:'pointer'}}>
+                <option value=''>Auto</option>
+                {cats.map((c: any) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+              </select>
+            ))}
+          </div>
+          <div style={{display:'flex',gap:8}}>
+            {!confirmReset ? (
+              <button onClick={()=>setConfirmReset(true)} style={{padding:'7px 14px',borderRadius:8,background:'rgba(239,68,68,0.07)',border:'1px solid rgba(239,68,68,0.2)',color:'rgba(239,68,68,0.6)',cursor:'pointer',fontSize:'0.8rem'}}>Wyczysc</button>
+            ) : (
+              <><span style={{color:'#f87171',fontSize:'0.8rem',alignSelf:'center'}}>Na pewno?</span>
+              <button onClick={handleResetMap} style={{padding:'7px 12px',borderRadius:8,background:'rgba(239,68,68,0.15)',border:'1px solid rgba(239,68,68,0.4)',color:'#f87171',cursor:'pointer',fontSize:'0.8rem'}}>Tak</button>
+              <button onClick={()=>setConfirmReset(false)} style={{padding:'7px 12px',borderRadius:8,background:'transparent',border:'1px solid rgba(255,255,255,0.1)',color:'rgba(255,255,255,0.4)',cursor:'pointer',fontSize:'0.8rem'}}>Anuluj</button></>
+            )}
+          </div>
         </div>
       )}
-      <div style={{ display: 'grid', gridTemplateColumns: `repeat(${cols}, 1fr)`, gap: 6, marginBottom: 16 }}>
-        {Array.from({ length: total }, (_, i) => {
-          const catId = tileCategories[i] ?? ''
-          const cat   = cats.find(c => c.id === catId)
-          const x     = i % cols
-          const isGold = x < cols / 2
-          return (
-            <div key={i} style={{ position: 'relative' }}>
-              <select value={catId} onChange={e => handleTileCat(i, e.target.value)} style={{
-                width: '100%', padding: '7px 8px', borderRadius: 7,
-                background: catId ? (isGold ? 'rgba(255,215,0,0.08)' : 'rgba(192,192,192,0.08)') : 'rgba(255,255,255,0.03)',
-                border: `1px solid ${catId ? (isGold ? 'rgba(255,215,0,0.3)' : 'rgba(192,192,192,0.25)') : 'rgba(255,255,255,0.08)'}`,
-                color: catId ? '#fff' : 'rgba(255,255,255,0.3)',
-                fontSize: '0.72rem', cursor: 'pointer', appearance: 'none',
-              }}>
-                <option value="">Pole {i + 1}</option>
-                {cats.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
-              </select>
-              {cat && <div style={{ position: 'absolute', top: '50%', right: 8, transform: 'translateY(-50%)', fontSize: '0.9rem', pointerEvents: 'none' }}>{cat.emoji}</div>}
-              {saving === i && <div style={{ position: 'absolute', inset: 0, borderRadius: 7, background: 'rgba(212,175,55,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.6rem', color: '#D4AF37' }}>●</div>}
-            </div>
-          )
-        })}
+    </div>
+  )
+}
+function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatEmoji,catLang,setCatLang,editing,setEditing,addCat,saveEditCat,removeCat,inp,bulkCatId,setBulkCatId,bulkFiles,setBulkFiles,bulkProgress,bulkUploading,bulkDone,setBulkDone,bulkError,bulkRef,handleBulkUpload}: any) {
+  return (
+    <div>
+      <SectionTitle icon='Kategorie' title='Kategorie' />
+      <div style={{padding:16,marginBottom:20,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:12}}>
+        <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.72rem',letterSpacing:1,marginBottom:12}}>NOWA KATEGORIA</div>
+        <div style={{display:'flex',gap:8,flexWrap:'wrap' as const}}>
+          <input value={catEmoji} onChange={e=>setCatEmoji(e.target.value)} style={{...inp,width:52,textAlign:'center' as const,fontSize:'1.2rem'}} />
+          <input value={catName} onChange={e=>setCatName(e.target.value)} onKeyDown={(e:any)=>e.key==='Enter'&&addCat()} placeholder='Nazwa kategorii' style={{...inp,flex:1,minWidth:160}} />
+          <LangPicker value={catLang} onChange={setCatLang} />
+          <button onClick={addCat} disabled={!catName.trim()} style={{padding:'8px 18px',borderRadius:8,background:catName.trim()?'linear-gradient(135deg,#D4AF37,#FFD700)':'rgba(255,255,255,0.08)',color:catName.trim()?'#000':'rgba(255,255,255,0.3)',border:'none',cursor:catName.trim()?'pointer':'default',fontWeight:700,fontSize:'0.85rem'}}>+ Dodaj</button>
+        </div>
       </div>
-
-      {customCount > 0 && !confirmReset && (
-        <button onClick={() => setConfirmReset(true)} style={{
-          padding: '8px 18px', borderRadius: 8, background: 'rgba(239,68,68,0.06)',
-          border: '1px solid rgba(239,68,68,0.2)', color: 'rgba(239,68,68,0.7)',
-          cursor: 'pointer', fontSize: '0.8rem',
-        }}>Wyczyść przypisania</button>
+      {catsLoading ? <div style={{textAlign:'center' as const,color:'rgba(255,255,255,0.2)',padding:40}}>Ladowanie...</div>
+      : cats.length === 0 ? <div style={{textAlign:'center' as const,color:'rgba(255,255,255,0.2)',padding:48,border:'1px dashed rgba(255,255,255,0.08)',borderRadius:12}}>Brak kategorii</div>
+      : (
+        <div style={{display:'flex',flexDirection:'column' as const,gap:6,marginBottom:24}}>
+          {cats.map((cat: any) => (
+            <div key={cat.id} style={{display:'flex',alignItems:'center',gap:12,padding:'12px 16px',background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10}}>
+              {editing && editing.id === cat.id ? (
+                <><input value={editing.emoji} onChange={e=>setEditing({...editing,emoji:e.target.value})} style={{...inp,width:48,textAlign:'center' as const,fontSize:'1.1rem'}} />
+                <input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})} style={{...inp,flex:1}} autoFocus />
+                <LangPicker value={editing.lang||'pl-PL'} onChange={(v:any)=>setEditing({...editing,lang:v})} />
+                <button onClick={saveEditCat} style={{padding:'6px 12px',borderRadius:8,background:'rgba(212,175,55,0.2)',border:'1px solid #D4AF37',color:'#D4AF37',cursor:'pointer',fontSize:'0.82rem'}}>Zap</button>
+                <button onClick={()=>setEditing(null)} style={{padding:'6px 12px',borderRadius:8,background:'transparent',border:'1px solid rgba(255,255,255,0.12)',color:'rgba(255,255,255,0.4)',cursor:'pointer',fontSize:'0.82rem'}}>X</button></>
+              ) : (
+                <><span style={{fontSize:'1.4rem',minWidth:32,textAlign:'center' as const}}>{cat.emoji}</span>
+                <span style={{flex:1,color:'#fff',fontSize:'0.9rem'}}>{cat.name}</span>
+                <span style={{fontSize:'0.65rem',color:'rgba(255,255,255,0.25)'}}>{cat.lang||'pl-PL'}</span>
+                <a href={'/admin/categories/'+cat.id+'/questions'} style={{padding:'5px 10px',borderRadius:8,background:'rgba(99,102,241,0.1)',border:'1px solid rgba(99,102,241,0.3)',color:'#818cf8',textDecoration:'none',fontSize:'0.78rem'}}>Pytania</a>
+                <button onClick={()=>setEditing(cat)} style={{padding:'5px 10px',borderRadius:8,background:'rgba(212,175,55,0.08)',border:'1px solid rgba(212,175,55,0.2)',color:'#D4AF37',cursor:'pointer',fontSize:'0.78rem'}}>Edyt</button>
+                <button onClick={()=>removeCat(cat.id)} style={{padding:'5px 10px',borderRadius:8,background:'rgba(239,68,68,0.06)',border:'1px solid rgba(239,68,68,0.2)',color:'#f87171',cursor:'pointer',fontSize:'0.78rem'}}>Del</button></>
+              )}
+            </div>
+          ))}
+        </div>
       )}
-      {confirmReset && (
-        <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-          <span style={{ color: 'rgba(255,255,255,0.4)', fontSize: '0.8rem' }}>Na pewno?</span>
-          <button onClick={async () => { await resetTileCategories(); setConfirmReset(false); onFlash() }} style={{
-            padding: '7px 16px', borderRadius: 8, background: '#ef4444', border: 'none', color: '#fff', cursor: 'pointer', fontSize: '0.8rem',
-          }}>Tak, wyczyść</button>
-          <button onClick={() => setConfirmReset(false)} style={{
-            padding: '7px 14px', borderRadius: 8, background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.12)', color: 'rgba(255,255,255,0.4)', cursor: 'pointer', fontSize: '0.8rem',
-          }}>Anuluj</button>
+      <div style={{padding:18,background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12}}>
+        <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'0.9rem',letterSpacing:3,color:'rgba(255,255,255,0.5)',marginBottom:12}}>MASOWE WGRYWANIE</div>
+        <select value={bulkCatId} onChange={e=>setBulkCatId(e.target.value)} style={{...inp,marginBottom:10}}>
+          <option value=''>Wybierz kategorie...</option>
+          {cats.map((c: any) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        </select>
+        <input ref={bulkRef} type='file' accept='image/*' multiple style={{display:'none'}} onChange={e=>setBulkFiles(Array.from((e.target as any).files||[]))} />
+        <div style={{display:'flex',gap:8,flexWrap:'wrap' as const,alignItems:'center'}}>
+          <button onClick={()=>bulkRef.current&&(bulkRef.current as any).click()} style={{padding:'8px 16px',borderRadius:8,background:'rgba(255,255,255,0.06)',border:'1px solid rgba(255,255,255,0.1)',color:'#fff',cursor:'pointer',fontSize:'0.85rem'}}>Wybierz {bulkFiles.length>0?'('+bulkFiles.length+')':''}</button>
+          <button onClick={handleBulkUpload} disabled={!bulkCatId||bulkFiles.length===0||bulkUploading} style={{padding:'8px 16px',borderRadius:8,background:bulkCatId&&bulkFiles.length>0?'rgba(212,175,55,0.15)':'rgba(255,255,255,0.03)',border:'1px solid '+(bulkCatId&&bulkFiles.length>0?'#D4AF37':'rgba(255,255,255,0.08)'),color:bulkCatId&&bulkFiles.length>0?'#D4AF37':'rgba(255,255,255,0.2)',cursor:'pointer',fontSize:'0.85rem'}}>
+            {bulkUploading?'Wgrywanie '+bulkProgress+'%...':'Wgraj wszystkie'}
+          </button>
+        </div>
+        {bulkUploading&&<div style={{marginTop:10,height:4,background:'rgba(255,255,255,0.08)',borderRadius:4,overflow:'hidden'}}><div style={{height:'100%',width:bulkProgress+'%',background:'#D4AF37',transition:'width 0.3s'}} /></div>}
+        {bulkDone&&<div style={{marginTop:8,color:'#4ade80',fontSize:'0.8rem'}}>Wgrano pomyslnie!</div>}
+      </div>
+    </div>
+  )
+}
+function GameHistorySection({history, loading, onLoad}: any) {
+  const [loaded, setLoaded] = useState(false)
+  useEffect(() => { if (!loaded) { onLoad(); setLoaded(true) } }, [])
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+        <SectionTitle icon='Historia' title='Historia Gier Online' />
+        <button onClick={onLoad} style={{padding:'7px 14px',borderRadius:8,background:'rgba(129,140,248,0.1)',border:'1px solid rgba(129,140,248,0.3)',color:'#818cf8',cursor:'pointer',fontSize:'0.8rem'}}>Odswiez</button>
+      </div>
+      {loading ? <div style={{textAlign:'center' as const,padding:40,color:'rgba(255,255,255,0.3)'}}>Ladowanie...</div>
+      : history.length === 0 ? <div style={{textAlign:'center' as const,padding:40,color:'rgba(255,255,255,0.2)',border:'1px dashed rgba(255,255,255,0.08)',borderRadius:12}}>Brak rozegranych gier online</div>
+      : (
+        <div style={{borderRadius:12,border:'1px solid rgba(255,255,255,0.07)',overflow:'hidden'}}>
+          <table style={{width:'100%',borderCollapse:'collapse' as const,fontSize:'0.82rem'}}>
+            <thead><tr style={{background:'rgba(0,0,0,0.3)'}}>
+              {['DATA','WYNIK','ID ZWYCIEZCY','PUNKTY'].map(h=><th key={h} style={{padding:'10px 12px',textAlign:'left' as const,fontSize:'0.65rem',letterSpacing:2,color:'rgba(255,255,255,0.3)'}}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {history.map((g: any, i: number) => (
+                <tr key={g.id} style={{background:i%2===0?'transparent':'rgba(255,255,255,0.01)',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
+                  <td style={{padding:'10px 12px',color:'rgba(255,255,255,0.4)',fontSize:'0.75rem'}}>{new Date(g.played_at).toLocaleDateString('pl')}</td>
+                  <td style={{padding:'10px 12px'}}>{g.is_draw?<span style={{color:'#a78bfa',fontSize:'0.8rem'}}>Remis</span>:<span style={{color:'#4ade80',fontSize:'0.8rem'}}>Rozstrzygniety</span>}</td>
+                  <td style={{padding:'10px 12px',color:'#D4AF37',fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,fontSize:'0.75rem'}}>{g.winner_id?.slice(0,8)??'—'}</td>
+                  <td style={{padding:'10px 12px',fontFamily:"'Bebas Neue',sans-serif",color:'#fff',letterSpacing:2}}>{g.winner_score??0}:{g.loser_score??0}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
     </div>

@@ -1,10 +1,3 @@
-// src/types.ts — ROZSZERZONY O TYPY MULTIPLAYER
-// Oryginalne typy Singleplayer pozostają bez zmian
-
-// ─────────────────────────────────────────────────────────────
-// ORYGINALNE TYPY (bez zmian)
-// ─────────────────────────────────────────────────────────────
-
 export interface GameConfig {
   // Board
   GRID_COLS: number
@@ -81,140 +74,64 @@ export interface GameStats {
   silverPct: number
 }
 
-// ─────────────────────────────────────────────────────────────
-// NOWE TYPY — MULTIPLAYER / AUTH
-// ─────────────────────────────────────────────────────────────
+// ── Multiplayer types ──────────────────────────────────────────────────────
 
-/** Publiczny profil gracza (tabela: profiles) */
-export interface UserProfile {
-  id: string
-  username: string
-  avatar: string          // emoji
-  xp: number
-  wins: number
-  losses: number
-  win_streak: number
-  best_streak: number
-  is_admin: boolean
-  created_at: string
-  updated_at: string
-}
+export type MPRole = 'host' | 'guest'
+export type MPStatus = 'idle' | 'creating' | 'joining' | 'waiting' | 'playing' | 'finished'
+export type MPRoomStatus = 'waiting' | 'playing' | 'finished'
+export type MPActivePlayer = 'host' | 'guest'
 
-/** Ranga gracza na podstawie XP */
-export interface Rank {
-  min: number
-  max: number
-  name: string
-  icon: string
-  color: string
-}
-
-/** Pokój gry multiplayer (tabela: game_rooms) */
-export interface GameRoom {
-  id: string
-  code: string            // 6-znakowy kod pokoju
-  host_id: string
-  guest_id: string | null
-  status: 'waiting' | 'playing' | 'finished' | 'cancelled'
-  config: RoomConfig
-  current_round: number
-  host_score: number
-  guest_score: number
-  game_state: MPGameState | null
-  current_turn: 'host' | 'guest'
-  created_at: string
-  updated_at: string
-}
-
-/** Konfiguracja pokoju */
-export interface RoomConfig {
-  rounds: number
-  duel_time: number
-  board_shape: number
-  random_tiles?: boolean
-}
-
-/** Kafelek w grze multiplayer */
-export type MPTileOwner = 'host' | 'guest' | null
-
-export interface MPTile {
-  idx: number
+export interface MPDuelState {
+  tileIdx: number
   categoryId: string
   categoryName: string
   emoji: string
-  owner: MPTileOwner
-}
-
-/** Faza gry multiplayer */
-export type MPGamePhase =
-  | 'countdown'    // odliczanie startowe 3-2-1
-  | 'select_tile'  // gracz wybiera kafelek
-  | 'duel'         // obaj grają duel
-  | 'round_end'    // podsumowanie rundy
-  | 'game_over'    // koniec gry
-
-/** Pytanie w trybie multiplayer */
-export interface MPQuestion {
-  id: string
-  answer: string
-  synonyms: string[]
-  image_path: string | null
-  categoryName: string
-  emoji: string
-}
-
-/** Pełny stan gry MP (zapisywany w game_rooms.game_state) */
-export interface MPGameState {
-  phase: MPGamePhase
-  tiles: MPTile[]
-  currentTurn: 'host' | 'guest'
-  selectedTileIdx: number | null
-  currentQuestion: MPQuestion | null
+  questionId: string
   usedQuestionIds: string[]
-  round: number
-  totalRounds: number
-  hostScore: number
-  guestScore: number
-  duelTimer: number
-  hostAnswered: boolean
-  guestAnswered: boolean
-  roundWinner: 'host' | 'guest' | 'draw' | null
-  winner: 'host' | 'guest' | 'draw' | null
-  startedAt: number
+  timerHost: number
+  timerGuest: number
+  active: MPActivePlayer
+  started: boolean
+  paused: boolean
+  lang: SpeechLang
 }
 
-/** Wpis w historii gier (tabela: game_history) */
-export interface GameHistoryEntry {
+export interface MPGameState {
+  tiles: Tile[]
+  cursor: number
+  duel: MPDuelState | null
+}
+
+export interface MPRoom {
   id: string
-  room_id: string | null
-  winner_id: string | null
-  loser_id: string | null
-  winner_score: number
-  loser_score: number
-  rounds_total: number
-  duration_sec: number
-  is_draw: boolean
-  played_at: string
+  code: string
+  host_id: string
+  guest_id: string | null
+  status: MPRoomStatus
+  game_state: MPGameState | null
+  host_score: number
+  guest_score: number
+  created_at: string
+  updated_at: string
 }
 
-/** Wpis w kolejce matchmakingu (tabela: matchmaking_queue) */
-export interface MatchmakingEntry {
-  id: string
-  player_id: string
-  elo: number
-  joined_at: string
-}
-
-/** Wiersz tabeli liderów (widok: leaderboard) */
-export interface LeaderboardEntry {
+export interface MPProfile {
   id: string
   username: string
-  avatar: string
-  xp: number
-  wins: number
-  losses: number
-  win_streak: number
-  best_streak: number
-  win_rate: number
-  rank: number
 }
+
+// Events broadcast over Supabase Realtime channel
+export type MPEvent =
+  | { type: 'cursor_move'; idx: number }
+  | { type: 'duel_start'; tileIdx: number; categoryId: string; categoryName: string; emoji: string; questionId: string; lang: SpeechLang }
+  | { type: 'fight_start' }
+  | { type: 'tick'; timerHost: number; timerGuest: number }
+  | { type: 'correct'; player: MPActivePlayer; answer: string }
+  | { type: 'pass'; player: MPActivePlayer }
+  | { type: 'duel_close' }
+  | { type: 'next_question'; questionId: string; active: MPActivePlayer; timerHost: number; timerGuest: number }
+  | { type: 'round_end'; winner: MPActivePlayer | 'draw'; tileIdx: number; timerHost: number; timerGuest: number }
+  | { type: 'feedback'; text: string; feedbackType: 'correct' | 'pass' | 'timeout' | 'voice' }
+  | { type: 'game_end' }
+  | { type: 'chat_message'; from: string; text: string; ts: number }
+  | { type: 'game_settings'; rounds: number; duelTime: number; categoriesCount: number }

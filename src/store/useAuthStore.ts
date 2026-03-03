@@ -1,234 +1,228 @@
-// src/store/useAuthStore.ts
-
+/**
+ * useAuthStore — Supabase Auth + Profile management
+ * Supports both registered (email/password) and anonymous players
+ */
 import { create } from 'zustand'
 import { supabase } from '../lib/supabase'
-import { UserProfile } from '../types'
 
-export type Profile = UserProfile
-
-interface AuthStore {
-  profile: UserProfile | null
-  loading: boolean
-  initialized: boolean
-
-  initialize: () => Promise<void>
-  register: (email: string, password: string, username: string, avatar?: string) => Promise<{ error: string | null; needsConfirmation: boolean }>
-  login: (email: string, password: string) => Promise<string | null>
-  logout: () => Promise<void>
-  updateProfile: (updates: Partial<Pick<UserProfile, 'username' | 'avatar'>>) => Promise<string | null>
-  refreshProfile: () => Promise<void>
+export interface UserProfile {
+  id: string
+  email?: string
+  username: string
+  avatar: string       // emoji fallback
+  avatar_url?: string  // custom image URL
+  xp: number
+  wins: number
+  losses: number
+  win_streak: number
+  best_streak: number
+  status: 'online' | 'offline' | 'in_game'
+  last_username_change?: string
+  created_at?: string
 }
 
-// Tworzy lub pobiera profil gracza — fallback gdy trigger DB nie zadziałał
-async function ensureProfile(userId: string, fallbackUsername?: string, fallbackAvatar?: string): Promise<UserProfile | null> {
-  // Próba pobrania istniejącego profilu
-  const { data: existing } = await supabase
+interface AuthStore {
+  user: UserProfile | null
+  session: any | null
+  loading: boolean
+  error: string | null
+
+  initialize: () => Promise<void>
+  register: (email: string, password: string, username: string) => Promise<boolean>
+  login: (email: string, password: string) => Promise<boolean>
+  logout: () => Promise<void>
+  updateUsername: (username: string) => Promise<boolean>
+  updateAvatar: (emoji: string) => Promise<boolean>
+  uploadAvatarImage: (file: File) => Promise<boolean>
+  refreshProfile: () => Promise<void>
+  clearError: () => void
+}
+
+const AVATARS = [
+  // Zwierzęta
+  '🦁','🐯','🦊','🐺','🦝','🐻','🦈','🦅','🦉','🐲','🐸','🦋','🐙','🦑','🦂',
+  // Gracze / sport
+  '🎮','🕹️','🎯','🎲','🏆','🥊','⚽','🏀','🏈','🎳','🎿','🏄','🤿','🧗','🎭',
+  // Moc / magia
+  '🔥','⚡','💎','👑','⚔️','🛡️','🔮','💫','🌟','🌈','🌊','🍀','☄️','🧿','💀',
+  // Kosmos / nauka
+  '🚀','🛸','🤖','👾','🧬','🔭','🧪','⚙️','🧩','💡','🎵','📡','🌍','🪐','🧠',
+]
+
+export const AVATAR_OPTIONS = AVATARS
+
+async function loadProfile(userId: string): Promise<UserProfile | null> {
+  const { data, error } = await supabase
     .from('profiles')
     .select('*')
     .eq('id', userId)
     .maybeSingle()
+  if (error || !data) return null
+  return data as UserProfile
+}
 
-  if (existing) return existing as UserProfile
-
-  // Profil nie istnieje (trigger nie zadziałał) — utwórz ręcznie
-  const username = fallbackUsername ?? `gracz_${userId.slice(0, 6)}`
-  const avatar = fallbackAvatar ?? '🎮'
-
-  const { data: created, error } = await supabase
-    .from('profiles')
-    .insert({ id: userId, username, avatar, xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0, is_admin: false })
-    .select()
-    .maybeSingle()
-
-  if (error) {
-    console.error('[Auth] Nie udało się utworzyć profilu:', error.message)
-    return null
-  }
-
-  return created as UserProfile
+async function upsertProfile(profile: Partial<UserProfile> & { id: string }): Promise<void> {
+  await supabase.from('profiles').upsert(profile, { ignoreDuplicates: false })
 }
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
-  profile: null,
-  loading: false,
-  initialized: false,
+  user: null,
+  session: null,
+  loading: true,
+  error: null,
 
-  // ── Inicjalizacja przy starcie aplikacji ──────────────────
   initialize: async () => {
+    set({ loading: true })
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.user) {
-        const profile = await ensureProfile(session.user.id)
-        if (profile) set({ profile })
+        const profile = await loadProfile(session.user.id)
+        set({ session, user: profile })
+        // Mark online
+        if (profile) {
+          await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
+        }
       }
     } catch (e) {
-      console.warn('[Auth] initialize error:', e)
-    } finally {
-      set({ initialized: true })
+      console.warn('[Auth] init error', e)
     }
+    set({ loading: false })
 
-    // Nasłuchuj zmian sesji
+    // Listen for auth changes
     supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
-        const profile = await ensureProfile(session.user.id)
-        if (profile) set({ profile })
+        const profile = await loadProfile(session.user.id)
+        set({ session, user: profile })
+        if (profile) {
+          await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
+        }
       } else if (event === 'SIGNED_OUT') {
-        set({ profile: null })
+        set({ session: null, user: null })
       }
     })
   },
 
-  // ── Rejestracja ───────────────────────────────────────────
-  register: async (email, password, username, avatar = '🎮') => {
-    set({ loading: true })
+  register: async (email, password, username) => {
+    set({ error: null })
+    const trimmed = username.trim().toUpperCase().slice(0, 20)
+    if (trimmed.length < 3) {
+      set({ error: 'Nick musi mieć co najmniej 3 znaki' })
+      return false
+    }
 
     try {
-      // Sprawdź unikalność nicku
-      const { data: existing } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('username', username.trim())
-        .maybeSingle()
+      const { data, error } = await supabase.auth.signUp({ email, password })
+      if (error) { set({ error: error.message }); return false }
+      if (!data.user) { set({ error: 'Błąd rejestracji' }); return false }
 
-      if (existing) {
-        set({ loading: false })
-        return { error: 'Ta nazwa gracza jest już zajęta.', needsConfirmation: false }
+      // Create profile
+      const profile: UserProfile = {
+        id: data.user.id,
+        email,
+        username: trimmed,
+        avatar: AVATARS[Math.floor(Math.random() * AVATARS.length)],
+        xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0,
+        status: 'online',
+        last_username_change: new Date().toISOString(),
       }
-
-      // Rejestracja
-      const { data, error } = await supabase.auth.signUp({
-        email: email.trim().toLowerCase(),
-        password,
-      })
-
-      if (error) {
-        const msg = error.message.includes('already registered')
-          ? 'Ten adres email jest już zarejestrowany.'
-          : error.message
-        set({ loading: false })
-        return { error: msg, needsConfirmation: false }
-      }
-
-      if (!data.user) {
-        set({ loading: false })
-        return { error: 'Nie udało się utworzyć konta. Spróbuj ponownie.', needsConfirmation: false }
-      }
-
-      // Brak sesji = email confirmation wymagany
-      if (!data.session) {
-        set({ loading: false })
-        return { error: null, needsConfirmation: true }
-      }
-
-      // Sesja dostępna = email confirmation wyłączony — utwórz / zaktualizuj profil
-      await new Promise(r => setTimeout(r, 800)) // czekaj na trigger
-
-      const profile = await ensureProfile(data.user.id, username.trim(), avatar)
-
-      // Zaktualizuj nick i avatar (trigger mógł ustawić domyślne wartości)
-      if (profile) {
-        await supabase.from('profiles')
-          .update({ username: username.trim(), avatar })
-          .eq('id', data.user.id)
-
-        const updated = { ...profile, username: username.trim(), avatar }
-        set({ profile: updated })
-      }
-
-      set({ loading: false })
-      return { error: null, needsConfirmation: false }
-
+      await upsertProfile(profile)
+      set({ user: profile })
+      return true
     } catch (e: any) {
-      console.error('[Auth] register error:', e)
-      set({ loading: false })
-      return { error: 'Wystąpił nieoczekiwany błąd. Sprawdź połączenie.', needsConfirmation: false }
+      set({ error: e.message ?? 'Nieznany błąd' })
+      return false
     }
   },
 
-  // ── Logowanie ─────────────────────────────────────────────
   login: async (email, password) => {
-    set({ loading: true })
-
+    set({ error: null })
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: email.trim().toLowerCase(),
-        password,
-      })
-
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
       if (error) {
-        const msg = error.message.includes('Invalid login credentials')
-          ? 'Nieprawidłowy email lub hasło.'
-          : error.message.includes('Email not confirmed')
-          ? 'Potwierdź adres email przed zalogowaniem. Sprawdź skrzynkę.'
-          : error.message
-        set({ loading: false })
-        return msg
+        set({ error: error.message === 'Invalid login credentials' ? 'Nieprawidłowy email lub hasło' : error.message })
+        return false
       }
+      if (!data.user) { set({ error: 'Błąd logowania' }); return false }
 
-      if (!data.user) {
-        set({ loading: false })
-        return 'Nie udało się zalogować. Spróbuj ponownie.'
-      }
+      const profile = await loadProfile(data.user.id)
+      if (!profile) { set({ error: 'Nie znaleziono profilu' }); return false }
 
-      const profile = await ensureProfile(data.user.id)
-      if (profile) set({ profile })
-      else {
-        set({ loading: false })
-        return 'Zalogowano, ale nie znaleziono profilu. Sprawdź czy uruchomiono migracje SQL w Supabase.'
-      }
-
-      set({ loading: false })
-      return null
-
+      await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
+      set({ user: { ...profile, status: 'online' } })
+      return true
     } catch (e: any) {
-      console.error('[Auth] login error:', e)
-      set({ loading: false })
-      return 'Wystąpił nieoczekiwany błąd. Sprawdź połączenie z internetem.'
+      set({ error: e.message ?? 'Nieznany błąd' })
+      return false
     }
   },
 
-  // ── Wylogowanie ───────────────────────────────────────────
   logout: async () => {
+    const { user } = get()
+    if (user) {
+      await supabase.from('profiles').update({ status: 'offline' }).eq('id', user.id)
+    }
     await supabase.auth.signOut()
-    set({ profile: null })
+    set({ user: null, session: null })
   },
 
-  // ── Aktualizacja profilu ──────────────────────────────────
-  updateProfile: async (updates) => {
-    const { profile } = get()
-    if (!profile) return 'Nie jesteś zalogowany.'
+  updateUsername: async (username) => {
+    const { user } = get()
+    if (!user) return false
+    const trimmed = username.trim().toUpperCase().slice(0, 20)
+    if (trimmed.length < 3) { set({ error: 'Nick musi mieć co najmniej 3 znaki' }); return false }
 
-    if (updates.username) {
-      const { data: existing } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('username', updates.username.trim())
-        .neq('id', profile.id)
-        .maybeSingle()
-
-      if (existing) return 'Ta nazwa gracza jest już zajęta.'
+    // Weekly change check
+    if (user.last_username_change) {
+      const lastChange = new Date(user.last_username_change)
+      const daysSince = (Date.now() - lastChange.getTime()) / (1000 * 60 * 60 * 24)
+      if (daysSince < 7) {
+        const daysLeft = Math.ceil(7 - daysSince)
+        set({ error: `Zmianę nicku możesz wykonać za ${daysLeft} ${daysLeft === 1 ? 'dzień' : 'dni'}` })
+        return false
+      }
     }
 
-    const { error } = await supabase
-      .from('profiles')
-      .update(updates)
-      .eq('id', profile.id)
-
-    if (error) return error.message
-
-    await get().refreshProfile()
-    return null
+    const now = new Date().toISOString()
+    const { error } = await supabase.from('profiles')
+      .update({ username: trimmed, last_username_change: now, updated_at: now })
+      .eq('id', user.id)
+    if (error) { set({ error: error.message }); return false }
+    set({ user: { ...user, username: trimmed, last_username_change: now } })
+    return true
   },
 
-  // ── Odświeżenie profilu ───────────────────────────────────
-  refreshProfile: async () => {
+  updateAvatar: async (emoji) => {
+    const { user } = get()
+    if (!user) return false
+    const { error } = await supabase.from('profiles').update({ avatar: emoji, updated_at: new Date().toISOString() }).eq('id', user.id)
+    if (error) { set({ error: error.message }); return false }
+    set({ user: { ...user, avatar: emoji } })
+    return true
+  },
+
+  uploadAvatarImage: async (file) => {
+    const { user } = get()
+    if (!user) return false
     try {
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-      const profile = await ensureProfile(user.id)
-      if (profile) set({ profile })
-    } catch (e) {
-      console.warn('[Auth] refreshProfile error:', e)
+      const ext = file.name.split('.').pop() ?? 'jpg'
+      const path = `${user.id}/avatar.${ext}`
+      const { error: upErr } = await supabase.storage.from('avatars').upload(path, file, { upsert: true })
+      if (upErr) { set({ error: upErr.message }); return false }
+      const { data: { publicUrl } } = supabase.storage.from('avatars').getPublicUrl(path)
+      await supabase.from('profiles').update({ avatar_url: publicUrl, updated_at: new Date().toISOString() }).eq('id', user.id)
+      set({ user: { ...user, avatar_url: publicUrl } })
+      return true
+    } catch (e: any) {
+      set({ error: e.message }); return false
     }
   },
+
+  refreshProfile: async () => {
+    const { user } = get()
+    if (!user) return
+    const profile = await loadProfile(user.id)
+    if (profile) set({ user: profile })
+  },
+
+  clearError: () => set({ error: null }),
 }))
