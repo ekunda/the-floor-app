@@ -312,7 +312,7 @@ export default function MultiplayerGame() {
   const { config } = useConfigStore()
 
   const {
-    role, status, playerName, opponentName,
+    role, status, playerName, opponentName, opponentAvatar,
     tiles, cursor, gridCols, gridRows, categories,
     duel, currentQuestion, blockInput, feedback,
     winner, countdown, toastText, hostScore, guestScore,
@@ -333,12 +333,13 @@ export default function MultiplayerGame() {
   const oppTimer = isHost ? duel?.timerGuest ?? 0 : duel?.timerHost ?? 0
   const iAmActive = duel ? (isHost ? duel.active === 'host' : duel.active === 'guest') : false
 
-  const duelRef      = useRef(duel)
-  const blockRef     = useRef(blockInput)
-  const countdownRef = useRef(countdown)
-  const iAmActiveRef = useRef(iAmActive)
-  const matchedQRef  = useRef<string|null>(null)
-  const passedQRef   = useRef<string|null>(null)
+  // All refs kept fresh for use in speech callbacks (avoids stale closure)
+  const duelRef         = useRef(duel)
+  const blockRef        = useRef(blockInput)
+  const countdownRef    = useRef(countdown)
+  const iAmActiveRef    = useRef(iAmActive)
+  const matchedQRef     = useRef<string|null>(null)   // guard: already sent correct for this qId
+  const passedQRef      = useRef<string|null>(null)   // guard: already sent pass for this qId
   const currAnswerRef   = useRef('')
   const currSynonymsRef = useRef<string[]>([])
 
@@ -347,7 +348,7 @@ export default function MultiplayerGame() {
   countdownRef.current = countdown
   iAmActiveRef.current = iAmActive
 
-  // Reset match guard when question changes
+  // Reset guards when question changes (new qId = fresh guards)
   useEffect(() => {
     currAnswerRef.current   = currentQuestion?.answer ?? ''
     currSynonymsRef.current = Array.isArray(currentQuestion?.synonyms) ? currentQuestion!.synonyms : []
@@ -357,7 +358,7 @@ export default function MultiplayerGame() {
 
   // Validate room access
   useEffect(() => {
-    if (status === 'idle') navigate('/multiplayer')
+    if (status === 'idle' || status === 'lobby' || status === 'waiting') navigate('/multiplayer')
     if (status === 'finished') navigate('/multiplayer')
   }, [status, navigate])
 
@@ -440,24 +441,32 @@ export default function MultiplayerGame() {
     return () => clearTimeout(t)
   }, [winner, config.WIN_CLOSE_MS, closeDuel])
 
-  // Speech recognition
+  // ── Speech recognition ─────────────────────────────────────────────────────
+  // Voice only acts when: duel started, NOT blocked, NOT countdown, IS your turn
   const tryVoiceMatch = useCallback((transcript: string, strict: boolean) => {
     const d = duelRef.current
-    if (!d?.started || blockRef.current || countdownRef.current || !iAmActiveRef.current) return
-    const qId = d.questionId ?? null
+    // Hard guards using refs (always fresh)
+    if (!d?.started) return
+    if (blockRef.current)     return   // action already in flight
+    if (countdownRef.current) return   // countdown playing
+    if (!iAmActiveRef.current) return  // not your turn
 
+    const qId      = d.questionId ?? null
+    const answer   = currAnswerRef.current
+    const synonyms = currSynonymsRef.current
+
+    // Pass command
     if (isPassCommand(transcript)) {
-      if (passedQRef.current === qId) return
+      if (passedQRef.current === qId) return  // already passed this question
       passedQRef.current = qId
       pass()
       return
     }
-    if (matchedQRef.current === qId) return
-    const answer   = currAnswerRef.current
-    const synonyms = currSynonymsRef.current
-    if (!answer) return
+
+    // Answer match
+    if (!answer || matchedQRef.current === qId) return
     if (isAnswerMatch(transcript, answer, synonyms, strict)) {
-      matchedQRef.current = qId
+      matchedQRef.current = qId  // guard before calling (prevents double-fire)
       markCorrect()
     }
   }, [pass, markCorrect])
@@ -465,7 +474,8 @@ export default function MultiplayerGame() {
   const handleInterim = useCallback((t: string) => tryVoiceMatch(t, true),  [tryVoiceMatch])
   const handleFinal   = useCallback((t: string) => tryVoiceMatch(t, false), [tryVoiceMatch])
 
-  const speechActive = speechEnabled && !!duel?.started && !exitConfirm
+  // Speech is active only when duel is running AND it's your turn AND no modal
+  const speechActive = speechEnabled && !!duel?.started && !duel?.paused && !exitConfirm
 
   const { listening, error: speechError } = useSpeechRecognition({
     onFinal:   handleFinal,
@@ -474,11 +484,11 @@ export default function MultiplayerGame() {
     lang:      duel?.lang === 'both' ? ['pl-PL','en-US'] : (duel?.lang ?? 'pl-PL'),
   })
 
-  // Restart speech if it silently stopped
+  // Watchdog: restart recognition if it silently died (Chrome bug)
   const [speechRetryKey, setSpeechRetryKey] = useState(0)
   useEffect(() => {
     if (!speechActive || listening) return
-    const t = setTimeout(() => setSpeechRetryKey(k => k + 1), 3000)
+    const t = setTimeout(() => setSpeechRetryKey(k => k + 1), 2500)
     return () => clearTimeout(t)
   }, [speechActive, listening, speechRetryKey])
 
