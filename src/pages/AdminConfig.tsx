@@ -581,7 +581,7 @@ function ActiveRoomsSection() {
 
   const loadRooms = async () => {
     setLoading(true)
-    const { data } = await supabase.from('rooms')
+    const { data } = await supabase.from('game_rooms')
       .select('*').order('created_at', { ascending: false }).limit(50)
     const list = data ?? []
     setRooms(list)
