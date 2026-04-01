@@ -92,7 +92,8 @@ export default function MultiplayerLobby() {
   const [searchQ,       setSearchQ]       = useState('')
   const [invitation,    setInvitation]    = useState<Invitation | null>(null)
   const [invitedIds,    setInvitedIds]    = useState<Set<string>>(new Set())
-  const [inviteDeclineMsg, setInviteDeclineMsg] = useState<string | null>(null)
+  const [inviteDeclineMsg,   setInviteDeclineMsg]   = useState<string | null>(null)  // shown to SENDER when declined
+  const [inviteDismissed,   setInviteDismissed]   = useState(false)                 // shown to INVITEE after declining
   const chatEndRef  = useRef<HTMLDivElement>(null)
   const searchQRef  = useRef(searchQ)
 
@@ -175,15 +176,19 @@ export default function MultiplayerLobby() {
 
   const handleDeclineInvite = () => {
     if (!invitation) return
-    // Notify sender
-    const respCh = supabase.channel(`invite_response:${invitation.fromId}`)
+    const inv = invitation
+    setInvitation(null)
+    // Show local dismissal to the invitee (no broadcast needed here)
+    setInviteDismissed(true)
+    setTimeout(() => setInviteDismissed(false), 2500)
+    // Notify sender — self:false so the invitee never receives their own decline
+    const respCh = supabase.channel(`invite_response:${inv.fromId}`, { config: { broadcast: { self: false } } })
     respCh.subscribe((st) => {
       if (st === 'SUBSCRIBED') {
         respCh.send({ type: 'broadcast', event: 'decline', payload: { fromName: user?.username ?? playerName } })
           .then(() => setTimeout(() => respCh.unsubscribe(), 1000))
       }
     })
-    setInvitation(null)
   }
 
   const handleLeave = async () => { await leaveRoom(); navigate('/') }
@@ -450,12 +455,22 @@ export default function MultiplayerLobby() {
         </div>
       )}
 
-      {/* ── Invite decline notification ──────────────────────────────────────── */}
+      {/* ── Notification: sender sees "X declined" ─────────────────────────── */}
       {inviteDeclineMsg && (
-        <div style={{ position:'fixed', top: invitation ? 160 : 16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
+        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
           <div style={{ background:'rgba(15,15,15,0.97)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'12px 18px', display:'flex', alignItems:'center', gap:10, boxShadow:'0 4px 24px rgba(0,0,0,0.4)' }}>
             <span style={{ fontSize:'1.2rem' }}>❌</span>
             <span style={{ fontSize:'0.8rem', color:'rgba(255,255,255,0.7)', fontFamily:"'Montserrat',sans-serif" }}>{inviteDeclineMsg}</span>
+          </div>
+        </div>
+      )}
+
+      {/* ── Notification: invitee sees "invitation dismissed" ───────────────── */}
+      {inviteDismissed && (
+        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
+          <div style={{ background:'rgba(15,15,15,0.97)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:12, padding:'12px 18px', display:'flex', alignItems:'center', gap:10, boxShadow:'0 4px 24px rgba(0,0,0,0.4)' }}>
+            <span style={{ fontSize:'1.2rem' }}>🚫</span>
+            <span style={{ fontSize:'0.8rem', color:'rgba(255,255,255,0.55)', fontFamily:"'Montserrat',sans-serif" }}>Zaproszenie odrzucone</span>
           </div>
         </div>
       )}
