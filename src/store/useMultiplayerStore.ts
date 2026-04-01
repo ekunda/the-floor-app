@@ -657,11 +657,16 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     },
 
     startGame: () => {
-      const { role, status } = get()
+      const { role, status, categories, gameSettings } = get()
       if (role !== 'host' || status !== 'lobby') return
-      set({ status: 'playing' })
+
+      // Rebuild tiles with the lobby's categoriesCount (may differ from createRoom default)
+      const { tiles, cols, rows } = buildTiles(categories, gameSettings.categoriesCount)
+      const cursor = Math.floor(tiles.length / 2) - 1
+
+      set({ status: 'playing', tiles, cursor, gridCols: cols, gridRows: rows })
       broadcast({ type: 'game_start' })
-      writeDB({ status: 'playing' })
+      writeDB({ tiles, cursor, status: 'playing' })
       // Ustaw status 'in_game' dla hosta
       useAuthStore.getState().setInGame()
     },
