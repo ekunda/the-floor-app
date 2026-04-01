@@ -92,8 +92,7 @@ export default function MultiplayerLobby() {
   const [searchQ,       setSearchQ]       = useState('')
   const [invitation,    setInvitation]    = useState<Invitation | null>(null)
   const [invitedIds,    setInvitedIds]    = useState<Set<string>>(new Set())
-  const [inviteDeclineMsg,   setInviteDeclineMsg]   = useState<string | null>(null)  // shown to SENDER when declined
-  const [inviteDismissed,   setInviteDismissed]   = useState(false)                 // shown to INVITEE after declining
+  const [inviteDismissed, setInviteDismissed] = useState(false) // shown to INVITEE after declining
   const chatEndRef  = useRef<HTMLDivElement>(null)
   const searchQRef  = useRef(searchQ)
 
@@ -157,17 +156,6 @@ export default function MultiplayerLobby() {
     return () => { ch.unsubscribe() }
   }, [user?.id])
 
-  // ── Invite response subscription (receive declines) ───────────────────────
-  useEffect(() => {
-    if (!user?.id) return
-    const myId = user.id
-    const ch = supabase.channel(`invite_response:${myId}`)
-    ch.on('broadcast', { event: 'decline' }, ({ payload }) => {
-      setInviteDeclineMsg(`${payload.fromName} odrzucił zaproszenie`)
-      setTimeout(() => setInviteDeclineMsg(null), 4000)
-    }).subscribe()
-    return () => { ch.unsubscribe() }
-  }, [user?.id])
 
   const handleCreate = async () => {
     if (loadingCreate) return
@@ -192,19 +180,9 @@ export default function MultiplayerLobby() {
 
   const handleDeclineInvite = () => {
     if (!invitation) return
-    const inv = invitation
     setInvitation(null)
-    // Show local dismissal to the invitee (no broadcast needed here)
     setInviteDismissed(true)
-    setTimeout(() => setInviteDismissed(false), 2500)
-    // Notify sender — self:false so the invitee never receives their own decline
-    const respCh = supabase.channel(`invite_response:${inv.fromId}`, { config: { broadcast: { self: false } } })
-    respCh.subscribe((st) => {
-      if (st === 'SUBSCRIBED') {
-        respCh.send({ type: 'broadcast', event: 'decline', payload: { fromName: user?.username ?? playerName } })
-          .then(() => setTimeout(() => respCh.unsubscribe(), 1000))
-      }
-    })
+    setTimeout(() => setInviteDismissed(false), 3000)
   }
 
   const handleLeave = async () => { await leaveRoom(); navigate('/') }
@@ -221,6 +199,19 @@ export default function MultiplayerLobby() {
   // Can send invite only when user has an open (waiting) room
   const canInvite = status === 'waiting' && role === 'host'
 
+  // ── Shared: declined invite toast (shown to the invitee only) ────────────
+  const declinedToast = inviteDismissed && (
+    <div style={{ position:'fixed', top:20, left:'50%', transform:'translateX(-50%)', zIndex:1100, animation:'slideDown 0.25s ease', maxWidth:380, width:'calc(100% - 32px)', pointerEvents:'none' }}>
+      <div style={{ background:'linear-gradient(135deg,#120808,#0e0606)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'13px 18px', display:'flex', alignItems:'center', gap:12, boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }}>
+        <span style={{ fontSize:'1.3rem', flexShrink:0 }}>🚫</span>
+        <div>
+          <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.78rem', letterSpacing:3, color:'rgba(239,68,68,0.85)', marginBottom:2 }}>ZAPROSZENIE ODRZUCONE</div>
+          <div style={{ fontSize:'0.72rem', color:'rgba(255,255,255,0.4)', fontFamily:"'Montserrat',sans-serif" }}>Nie dołączyłeś do pokoju</div>
+        </div>
+      </div>
+    </div>
+  )
+
   // ── IN LOBBY / WAITING ROOM ────────────────────────────────────────────────
   const inLobby = status === 'waiting' || status === 'lobby'
   if (inLobby && roomCode) {
@@ -234,6 +225,7 @@ export default function MultiplayerLobby() {
       <div style={G.bg}>
         <div style={G.grid} />
         <style>{CSS}</style>
+        {declinedToast}
 
         <div className="mpgrid" style={{ position:'relative', zIndex:1, width:'100%', maxWidth:920, display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, alignItems:'start' }}>
 
@@ -471,25 +463,7 @@ export default function MultiplayerLobby() {
         </div>
       )}
 
-      {/* ── Notification: sender sees "X declined" ─────────────────────────── */}
-      {inviteDeclineMsg && (
-        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
-          <div style={{ background:'rgba(15,15,15,0.97)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'12px 18px', display:'flex', alignItems:'center', gap:10, boxShadow:'0 4px 24px rgba(0,0,0,0.4)' }}>
-            <span style={{ fontSize:'1.2rem' }}>❌</span>
-            <span style={{ fontSize:'0.8rem', color:'rgba(255,255,255,0.7)', fontFamily:"'Montserrat',sans-serif" }}>{inviteDeclineMsg}</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Notification: invitee sees "invitation dismissed" ───────────────── */}
-      {inviteDismissed && (
-        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
-          <div style={{ background:'rgba(15,15,15,0.97)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:12, padding:'12px 18px', display:'flex', alignItems:'center', gap:10, boxShadow:'0 4px 24px rgba(0,0,0,0.4)' }}>
-            <span style={{ fontSize:'1.2rem' }}>🚫</span>
-            <span style={{ fontSize:'0.8rem', color:'rgba(255,255,255,0.55)', fontFamily:"'Montserrat',sans-serif" }}>Zaproszenie odrzucone</span>
-          </div>
-        </div>
-      )}
+      {declinedToast}
 
       <div className="mpgrid" style={{ position:'relative', zIndex:1, width:'100%', maxWidth:900, display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, alignItems:'start' }}>
 
