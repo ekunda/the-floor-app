@@ -92,7 +92,7 @@ export default function MultiplayerLobby() {
   const [searchQ,       setSearchQ]       = useState('')
   const [invitation,    setInvitation]    = useState<Invitation | null>(null)
   const [invitedIds,    setInvitedIds]    = useState<Set<string>>(new Set())
-  const [inviteDismissed, setInviteDismissed] = useState(false) // shown to INVITEE after declining
+  const [inviteDeclineMsg, setInviteDeclineMsg] = useState<string | null>(null) // shown to HOST when invite is declined
   const chatEndRef  = useRef<HTMLDivElement>(null)
   const searchQRef  = useRef(searchQ)
 
@@ -156,6 +156,17 @@ export default function MultiplayerLobby() {
     return () => { ch.unsubscribe() }
   }, [user?.id])
 
+  // ── Decline subscription (HOST hears when invite is declined) ────────────
+  useEffect(() => {
+    if (!user?.id) return
+    const ch = supabase.channel(`invite_response:${user.id}`)
+    ch.on('broadcast', { event: 'decline' }, ({ payload }) => {
+      setInviteDeclineMsg(`${payload.fromName} odrzucił zaproszenie`)
+      setTimeout(() => setInviteDeclineMsg(null), 4000)
+    }).subscribe()
+    return () => { ch.unsubscribe() }
+  }, [user?.id])
+
 
   const handleCreate = async () => {
     if (loadingCreate) return
@@ -180,9 +191,16 @@ export default function MultiplayerLobby() {
 
   const handleDeclineInvite = () => {
     if (!invitation) return
+    const inv = invitation
     setInvitation(null)
-    setInviteDismissed(true)
-    setTimeout(() => setInviteDismissed(false), 3000)
+    // Notify the host that this player declined — self:false prevents self-receipt
+    const respCh = supabase.channel(`invite_response:${inv.fromId}`, { config: { broadcast: { self: false } } })
+    respCh.subscribe((st) => {
+      if (st === 'SUBSCRIBED') {
+        respCh.send({ type: 'broadcast', event: 'decline', payload: { fromName: user?.username ?? playerName } })
+          .then(() => setTimeout(() => respCh.unsubscribe(), 1000))
+      }
+    })
   }
 
   const handleLeave = async () => { await leaveRoom(); navigate('/') }
@@ -199,14 +217,16 @@ export default function MultiplayerLobby() {
   // Can send invite only when user has an open (waiting) room
   const canInvite = status === 'waiting' && role === 'host'
 
-  // ── Shared: declined invite toast (shown to the invitee only) ────────────
-  const declinedToast = inviteDismissed && (
-    <div style={{ position:'fixed', top:20, left:'50%', transform:'translateX(-50%)', zIndex:1100, animation:'slideDown 0.25s ease', maxWidth:380, width:'calc(100% - 32px)', pointerEvents:'none' }}>
-      <div style={{ background:'linear-gradient(135deg,#120808,#0e0606)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'13px 18px', display:'flex', alignItems:'center', gap:12, boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }}>
-        <span style={{ fontSize:'1.3rem', flexShrink:0 }}>🚫</span>
+  // ── Shared: declined invite toast (shown to HOST/sender) ─────────────────
+  // Outer div only handles fixed centering — animation is on the INNER div
+  // to avoid the transform conflict that causes the position jump.
+  const declinedToast = inviteDeclineMsg && (
+    <div style={{ position:'fixed', top:20, left:'50%', transform:'translateX(-50%)', zIndex:1100, maxWidth:380, width:'calc(100% - 32px)', pointerEvents:'none' }}>
+      <div style={{ animation:'slideDown 0.25s ease', background:'linear-gradient(135deg,#120808,#0e0606)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'13px 18px', display:'flex', alignItems:'center', gap:12, boxShadow:'0 8px 32px rgba(0,0,0,0.5)' }}>
+        <span style={{ fontSize:'1.3rem', flexShrink:0 }}>❌</span>
         <div>
           <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.78rem', letterSpacing:3, color:'rgba(239,68,68,0.85)', marginBottom:2 }}>ZAPROSZENIE ODRZUCONE</div>
-          <div style={{ fontSize:'0.72rem', color:'rgba(255,255,255,0.4)', fontFamily:"'Montserrat',sans-serif" }}>Nie dołączyłeś do pokoju</div>
+          <div style={{ fontSize:'0.72rem', color:'rgba(255,255,255,0.5)', fontFamily:"'Montserrat',sans-serif" }}>{inviteDeclineMsg}</div>
         </div>
       </div>
     </div>
