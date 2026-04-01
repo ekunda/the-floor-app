@@ -23,9 +23,10 @@ import { useMultiplayerStore, FeedbackType } from '../store/useMultiplayerStore'
 import { Tile, Category, Question, TileOwner } from '../types'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
-const COLORS = {
-  gold:   { bg: '#1a1200', border: '#FFD700', glow: 'rgba(255,215,0,0.15)',   text: '#FFD700' },
-  silver: { bg: '#0e0e0e', border: '#C0C0C0', glow: 'rgba(192,192,192,0.10)', text: '#C0C0C0' },
+const COLORS: Record<TileOwner, { bg: string; border: string; glow: string; text: string }> = {
+  gold:    { bg: '#1a1200', border: '#FFD700', glow: 'rgba(255,215,0,0.15)',   text: '#FFD700' },
+  silver:  { bg: '#0e0e0e', border: '#C0C0C0', glow: 'rgba(192,192,192,0.10)', text: '#C0C0C0' },
+  neutral: { bg: '#0d0d0d', border: '#444444', glow: 'rgba(100,100,100,0.08)', text: '#888888' },
 }
 
 // ── Tiny canvas board (self-contained, reads from props) ──────────────────────
@@ -287,8 +288,9 @@ export default function MultiplayerGame() {
   const {
     role, status, playerName, opponentName, opponentAvatar,
     tiles, cursor, gridCols, gridRows, categories,
-    duel, currentQuestion, blockInput, feedback,
+    duel, currentQuestion, feedback,
     winner, countdown, toastText, hostScore, guestScore, gameResult,
+    currentPicker,
     moveCursor, startChallenge, startFight, markCorrect, pass, closeDuel, leaveRoom,
     showToast, showFeedback,
   } = useMultiplayerStore()
@@ -306,9 +308,10 @@ export default function MultiplayerGame() {
   const oppTimer = isHost ? duel?.timerGuest ?? 0 : duel?.timerHost ?? 0
   const iAmActive = duel ? (isHost ? duel.active === 'host' : duel.active === 'guest') : false
 
+  const isMyPick = role === currentPicker  // can I move cursor / pick tiles?
+
   // All refs kept fresh for use in speech callbacks (avoids stale closure)
   const duelRef         = useRef(duel)
-  const blockRef        = useRef(blockInput)
   const countdownRef    = useRef(countdown)
   const iAmActiveRef    = useRef(iAmActive)
   const matchedQRef     = useRef<string|null>(null)   // guard: already sent correct for this qId
@@ -318,7 +321,6 @@ export default function MultiplayerGame() {
   const currSynonymsRef = useRef<string[]>([])
 
   duelRef.current      = duel
-  blockRef.current     = blockInput
   countdownRef.current = countdown
   iAmActiveRef.current = iAmActive
 
@@ -388,7 +390,7 @@ export default function MultiplayerGame() {
       SoundEngine.unlockAudio()
       if (e.key === 'Escape') { e.preventDefault(); setExitConfirm(true); return }
       if (duel) return  // during duel: no manual controls (voice-only)
-      if (!isHost) return
+      // Only the current picker can navigate / start challenge (store validates too)
       switch (e.key) {
         case 'ArrowUp':    e.preventDefault(); moveCursor('up');    break
         case 'ArrowDown':  e.preventDefault(); moveCursor('down');  break
@@ -399,7 +401,7 @@ export default function MultiplayerGame() {
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [duel, isHost, moveCursor, startChallenge])
+  }, [duel, moveCursor, startChallenge])
 
   // Auto-start fight when duel opens (no manual "ROZPOCZNIJ WALKĘ" needed)
   useEffect(() => {
@@ -421,7 +423,7 @@ export default function MultiplayerGame() {
     const d = duelRef.current
     // Hard guards using refs (always fresh)
     if (!d?.started) return
-    if (blockRef.current)     return   // action already in flight
+    if (d.paused)             return   // action already in flight / countdown
     if (countdownRef.current) return   // countdown playing
     if (!iAmActiveRef.current) return  // not your turn
 
@@ -447,7 +449,7 @@ export default function MultiplayerGame() {
         pasDebounceRef.current = setTimeout(() => {
           pasDebounceRef.current = null
           const cur = duelRef.current
-          if (!cur?.started || blockRef.current) return
+          if (!cur?.started || cur.paused) return
           const curQId = cur.questionId ?? null
           if (passedQRef.current === curQId) return
           passedQRef.current = curQId
@@ -593,7 +595,7 @@ export default function MultiplayerGame() {
             categories={categories}
             gridCols={gridCols}
             gridRows={gridRows}
-            onCursorClick={isHost && !duel ? (idx) => {
+            onCursorClick={isMyPick && !duel ? (idx) => {
               useMultiplayerStore.setState({ cursor: idx })
               useMultiplayerStore.getState()._broadcastEvent({ type: 'cursor_move', idx })
             } : undefined}
@@ -608,7 +610,7 @@ export default function MultiplayerGame() {
       {/* ── Board hint (below board, not overlapping it) ── */}
       {!duel && (
         <div style={{ textAlign:'center', padding:'6px 0 10px', flexShrink:0, color:'rgba(255,255,255,0.18)', fontSize:'0.7rem', letterSpacing:2 }}>
-          {isHost ? '↑↓←→ NAWIGUJ · ENTER ROZPOCZNIJ WALKĘ' : 'OCZEKIWANIE NA RUCH PRZECIWNIKA…'}
+          {isMyPick ? '↑↓←→ NAWIGUJ · ENTER ROZPOCZNIJ WALKĘ' : 'OCZEKIWANIE NA RUCH PRZECIWNIKA…'}
         </div>
       )}
 

@@ -26,7 +26,7 @@ export interface Question {
   id: string; category_id: string; image_path: string | null
   answer: string; synonyms: string[]; created_at: string
 }
-export type TileOwner = 'gold' | 'silver'
+export type TileOwner = 'gold' | 'silver' | 'neutral'
 export interface Tile { x: number; y: number; categoryId: string; categoryName: string; owner: TileOwner }
 
 export interface DuelState {
@@ -89,7 +89,7 @@ export type MPEvent =
   | { type: 'next_question'; questionId: string; active: MPActivePlayer; timerHost: number; timerGuest: number }
   | { type: 'round_end';     winner: MPActivePlayer | 'draw'; tileIdx: number; hostScore: number; guestScore: number }
   | { type: 'feedback';      text: string; feedbackType: 'correct' | 'pass' | 'timeout' | 'voice' }
-  | { type: 'game_start' }
+  | { type: 'game_start'; tiles: Tile[]; gridCols: number; gridRows: number; cursor: number }
   | { type: 'game_end'; winner: MPActivePlayer | 'draw'; hostXpDelta: number; guestXpDelta: number; hostTiles: number; guestTiles: number }
   | { type: 'chat_message';  from: string; text: string; ts: number }
   | { type: 'game_settings'; duelTime: number; categoriesCount: number; gameMode: string; passPenalty: number }
