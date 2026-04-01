@@ -36,6 +36,10 @@ interface AuthStore {
   uploadAvatarImage: (file: File) => Promise<boolean>
   refreshProfile: () => Promise<void>
   clearError: () => void
+  /** Ustawia status 'in_game' gdy gracz wchodzi do gry */
+  setInGame: () => Promise<void>
+  /** Przywraca status 'online' po wyjściu z gry */
+  setOnline: () => Promise<void>
 }
 
 const AVATARS = [
@@ -78,7 +82,6 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       if (session?.user) {
         const profile = await loadProfile(session.user.id)
         set({ session, user: profile })
-        // Mark online
         if (profile) {
           await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
         }
@@ -87,6 +90,42 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       console.warn('[Auth] init error', e)
     }
     set({ loading: false })
+
+    // ── Heartbeat: aktualizuje last_seen co 60s ────────────────────────────
+    setInterval(() => {
+      const { user } = get()
+      if (!user) return
+      supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id)
+    }, 60_000)
+
+    // ── beforeunload: ustaw offline gdy użytkownik zamknie kartę ──────────
+    // keepalive: true gwarantuje wysłanie żądania mimo zamknięcia strony
+    const markOfflineFetch = () => {
+      const { user } = get()
+      if (!user) return
+      fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/rest/v1/profiles?id=eq.${user.id}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'apikey': import.meta.env.VITE_SUPABASE_ANON as string,
+            'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON as string}`,
+          },
+          body: JSON.stringify({ status: 'offline', last_seen: new Date().toISOString() }),
+          keepalive: true,
+        }
+      ).catch(() => {/* ignore — best effort */})
+    }
+    window.addEventListener('beforeunload', markOfflineFetch)
+
+    // ── visibilitychange: online/offline gdy karta jest ukryta/widoczna ───
+    document.addEventListener('visibilitychange', () => {
+      const { user } = get()
+      if (!user) return
+      const status = document.hidden ? 'offline' : 'online'
+      supabase.from('profiles').update({ status, last_seen: new Date().toISOString() }).eq('id', user.id)
+    })
 
     // Listen for auth changes
     supabase.auth.onAuthStateChange(async (event, session) => {
@@ -225,4 +264,18 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
   },
 
   clearError: () => set({ error: null }),
+
+  setInGame: async () => {
+    const { user } = get()
+    if (!user) return
+    await supabase.from('profiles').update({ status: 'in_game', last_seen: new Date().toISOString() }).eq('id', user.id)
+    set({ user: { ...user, status: 'in_game' } })
+  },
+
+  setOnline: async () => {
+    const { user } = get()
+    if (!user) return
+    await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', user.id)
+    set({ user: { ...user, status: 'online' } })
+  },
 }))

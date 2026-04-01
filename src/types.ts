@@ -76,7 +76,8 @@ export interface MPRoom {
 // Guest sends INTENT events → host validates & advances state → host broadcasts results.
 export type MPEvent =
   | { type: 'cursor_move';   idx: number }
-  | { type: 'duel_start';    tileIdx: number; categoryId: string; categoryName: string; emoji: string; questionId: string; lang: SpeechLang; firstActive: MPActivePlayer }
+  // timerHost/timerGuest carry the lobby-configured duelTime so guest uses correct values
+  | { type: 'duel_start';    tileIdx: number; categoryId: string; categoryName: string; emoji: string; questionId: string; lang: SpeechLang; firstActive: MPActivePlayer; timerHost: number; timerGuest: number }
   | { type: 'fight_start' }
   | { type: 'tick';          timerHost: number; timerGuest: number }
   | { type: 'correct';       player: MPActivePlayer; answer: string }
@@ -88,8 +89,9 @@ export type MPEvent =
   | { type: 'next_question'; questionId: string; active: MPActivePlayer; timerHost: number; timerGuest: number }
   | { type: 'round_end';     winner: MPActivePlayer | 'draw'; tileIdx: number; hostScore: number; guestScore: number }
   | { type: 'feedback';      text: string; feedbackType: 'correct' | 'pass' | 'timeout' | 'voice' }
-  | { type: 'game_start' }   // host starts the game from lobby
+  | { type: 'game_start' }
   | { type: 'game_end' }
   | { type: 'chat_message';  from: string; text: string; ts: number }
   | { type: 'game_settings'; duelTime: number; categoriesCount: number }
   | { type: 'opponent_name'; name: string; avatar: string }
+  | { type: 'opponent_left' }   // one player left — other should exit to lobby

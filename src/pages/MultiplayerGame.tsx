@@ -340,6 +340,7 @@ export default function MultiplayerGame() {
   const iAmActiveRef    = useRef(iAmActive)
   const matchedQRef     = useRef<string|null>(null)   // guard: already sent correct for this qId
   const passedQRef      = useRef<string|null>(null)   // guard: already sent pass for this qId
+  const pasDebounceRef  = useRef<ReturnType<typeof setTimeout>|null>(null)  // interim pass debounce
   const currAnswerRef   = useRef('')
   const currSynonymsRef = useRef<string[]>([])
 
@@ -354,6 +355,7 @@ export default function MultiplayerGame() {
     currSynonymsRef.current = Array.isArray(currentQuestion?.synonyms) ? currentQuestion!.synonyms : []
     matchedQRef.current     = null
     passedQRef.current      = null
+    if (pasDebounceRef.current) { clearTimeout(pasDebounceRef.current); pasDebounceRef.current = null }
   }, [currentQuestion?.id])
 
   // Validate room access
@@ -455,13 +457,36 @@ export default function MultiplayerGame() {
     const answer   = currAnswerRef.current
     const synonyms = currSynonymsRef.current
 
-    // Pass command — tylko na final (interim "pas" powoduje podwójny pas jak w DuelModal)
-    if (!strict && isPassCommand(transcript)) {
-      if (passedQRef.current === qId) return  // already passed this question
-      passedQRef.current = qId
-      pass()
+    // Pass command — z debounce jak w singleplayer (The Floor: "PASS" → natychmiastowa reakcja)
+    if (isPassCommand(transcript)) {
+      if (passedQRef.current === qId) {
+        // Już pas dla tego pytania — anuluj pending debounce i wyjdź
+        if (pasDebounceRef.current) { clearTimeout(pasDebounceRef.current); pasDebounceRef.current = null }
+        return
+      }
+      if (!strict) {
+        // Final — natychmiast
+        if (pasDebounceRef.current) { clearTimeout(pasDebounceRef.current); pasDebounceRef.current = null }
+        passedQRef.current = qId
+        pass()
+      } else {
+        // Interim — debounce 180ms (jak w useDuelLogic)
+        if (pasDebounceRef.current) return
+        pasDebounceRef.current = setTimeout(() => {
+          pasDebounceRef.current = null
+          const cur = duelRef.current
+          if (!cur?.started || blockRef.current) return
+          const curQId = cur.questionId ?? null
+          if (passedQRef.current === curQId) return
+          passedQRef.current = curQId
+          pass()
+        }, 180)
+      }
       return
     }
+
+    // Transcript rozwinął się poza komendę pas → anuluj debounce
+    if (pasDebounceRef.current) { clearTimeout(pasDebounceRef.current); pasDebounceRef.current = null }
 
     // Answer match
     if (!answer || matchedQRef.current === qId) return

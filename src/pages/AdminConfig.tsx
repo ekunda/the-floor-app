@@ -10,7 +10,7 @@ import { Category, GameConfig, SpeechLang } from '../types'
 import AdminPlayers from './AdminPlayers'
 
 type SPSection  = 'categories' | 'board' | 'gameplay_sp' | 'players_sp' | 'display' | 'advanced'
-type MPSection  = 'gameplay_mp' | 'xp_config' | 'history'
+type MPSection  = 'gameplay_mp' | 'xp_config' | 'history' | 'rooms'
 type ActiveMode = 'sp' | 'mp' | 'players'
 
 const SP_SECTIONS: { id: SPSection; label: string; icon: string }[] = [
@@ -26,11 +26,13 @@ const MP_SECTIONS: { id: MPSection; label: string; icon: string }[] = [
   { id: 'gameplay_mp', label: 'Rozgrywka MP', icon: '🌐' },
   { id: 'xp_config',   label: 'XP & Ranking', icon: '🏆' },
   { id: 'history',     label: 'Historia gier', icon: '📋' },
+  { id: 'rooms',       label: 'Aktywne pokoje', icon: '🚪' },
 ]
 
 const SP_GAMEPLAY: { key: keyof GameConfig; label: string; desc: string; min: number; max: number; unit: string }[] = [
   { key: 'DUEL_TIME',    label: 'Czas gracza',      desc: 'Sekundy na odpowiedz (SP)',    min: 10,   max: 120,   unit: 's'  },
   { key: 'PASS_PENALTY', label: 'Kara za pas',      desc: 'Sekundy odejmowane przy pasie',min: 0,    max: 30,    unit: 's'  },
+  { key: 'MAX_PASSES',   label: 'Limit pasow',      desc: 'Maks pasy per duel (0 = brak)',min: 0,    max: 10,    unit: ''   },
   { key: 'FEEDBACK_MS',  label: 'Czas feedbacku',   desc: 'Wyswietlanie odpowiedzi (ms)', min: 300,  max: 5000,  unit: 'ms' },
   { key: 'WIN_CLOSE_MS', label: 'Popup wygranej',   desc: 'Auto-zamkniecie wygranej (ms)',min: 1000, max: 10000, unit: 'ms' },
   { key: 'TOAST_MS',     label: 'Czas powiadomien', desc: 'Czas toast-ow (ms)',           min: 500,  max: 5000,  unit: 'ms' },
@@ -103,8 +105,9 @@ export default function AdminConfig() {
 
   const loadHistory = async () => {
     setHistLoading(true)
-    const { data } = await supabase.from('game_history').select('*')
-      .order('played_at', { ascending: false }).limit(50)
+    const { data } = await supabase.from('game_history')
+      .select('id,played_at,is_draw,winner_id,loser_id,winner_score,loser_score')
+      .order('played_at', { ascending: false }).limit(100)
     setHistory(data ?? []); setHistLoading(false)
   }
 
@@ -263,6 +266,10 @@ export default function AdminConfig() {
                   onChange={v => handleUpdate(f.key, v)} />
               ))}
             </div>
+            <div style={{marginTop:14}}>
+              <ToggleField label='Pas glosem (PASS / PAS)' desc='Rozpoznawanie slowa "pass" przez mikrofon jak w programie The Floor'
+                value={config.VOICE_PASS === 1} onChange={v => handleUpdate('VOICE_PASS', v ? 1 : 0)} />
+            </div>
           </div>
         )}
         {mode === 'sp' && spSect === 'players_sp' && (
@@ -297,15 +304,28 @@ export default function AdminConfig() {
             <SectionTitle icon="screen" title="Wyswietlanie i dzwiek" />
             <ToggleField label="Statystyki domyslnie widoczne" desc="Pasek posiadania planszy od startu"
               value={config.SHOW_STATS === 1} onChange={v => handleUpdate('SHOW_STATS', v ? 1 : 0)} />
-            <div style={{marginTop:10}}>
-              <NumberField label="Glosnosc" desc="Glosnosc efektow i muzyki (0-100%)"
-                value={config.SOUND_VOLUME} min={0} max={100} unit="%" onChange={v => handleUpdate('SOUND_VOLUME', v)} />
-            </div>
-            <div style={{marginTop:8,padding:'12px 16px',background:'rgba(255,255,255,0.02)',borderRadius:10,border:'1px solid rgba(255,255,255,0.07)'}}>
-              <div style={{height:6,background:'rgba(255,255,255,0.08)',borderRadius:4,overflow:'hidden'}}>
-                <div style={{height:'100%',width:`${config.SOUND_VOLUME}%`,background:'linear-gradient(90deg,#D4AF37,#FFD700)',borderRadius:4,transition:'width 0.3s'}} />
+            <ToggleField label="Podpowiedz pierwszej litery" desc="Pokazuje 1. litere odpowiedzi po 10s ciszy"
+              value={config.SHOW_ANSWER_HINT === 1} onChange={v => handleUpdate('SHOW_ANSWER_HINT', v ? 1 : 0)} />
+            <ToggleField label="Animacja obracania kafelka" desc="Efekt flip przy zmianie wlasciciela pola"
+              value={config.TILE_FLIP_ANIM === 1} onChange={v => handleUpdate('TILE_FLIP_ANIM', v ? 1 : 0)} />
+            <div style={{marginTop:14}}>
+              <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.72rem',letterSpacing:1,marginBottom:10}}>DZWIEK</div>
+              <div style={{display:'flex',flexDirection:'column',gap:8}}>
+                <NumberField label="Muzyka" desc="Glosnosc muzyki tla (0-100%)"
+                  value={config.MUSIC_VOLUME} min={0} max={100} unit="%" onChange={v => handleUpdate('MUSIC_VOLUME', v)} />
+                <NumberField label="Efekty" desc="Glosnosc efektow dzwiekowych (0-100%)"
+                  value={config.SFX_VOLUME} min={0} max={100} unit="%" onChange={v => handleUpdate('SFX_VOLUME', v)} />
               </div>
-              <div style={{textAlign:'center',color:'#D4AF37',fontSize:'0.72rem',marginTop:5}}>{config.SOUND_VOLUME}%</div>
+              <div style={{marginTop:10,display:'flex',gap:12}}>
+                {[{label:'Muzyka',v:config.MUSIC_VOLUME,c:'#818cf8'},{label:'Efekty',v:config.SFX_VOLUME,c:'#4ade80'}].map(({label,v,c})=>(
+                  <div key={label} style={{flex:1,padding:'10px 14px',background:'rgba(255,255,255,0.02)',borderRadius:10,border:'1px solid rgba(255,255,255,0.07)'}}>
+                    <div style={{height:5,background:'rgba(255,255,255,0.08)',borderRadius:4,overflow:'hidden',marginBottom:5}}>
+                      <div style={{height:'100%',width:`${v}%`,background:c,borderRadius:4,transition:'width 0.3s'}} />
+                    </div>
+                    <div style={{textAlign:'center',color:c,fontSize:'0.7rem'}}>{label}: {v}%</div>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
         )}
@@ -387,6 +407,9 @@ export default function AdminConfig() {
         )}
         {mode === 'mp' && mpSect === 'history' && (
           <GameHistorySection history={history} loading={histLoading} onLoad={loadHistory} />
+        )}
+        {mode === 'mp' && mpSect === 'rooms' && (
+          <ActiveRoomsSection />
         )}
 
         {mode === 'players' && <AdminPlayers inp={inp} />}
@@ -551,9 +574,89 @@ function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatE
     </div>
   )
 }
+function ActiveRoomsSection() {
+  const [rooms,   setRooms]   = useState<any[]>([])
+  const [loading, setLoading] = useState(false)
+  const [profiles, setProfiles] = useState<Record<string,string>>({})
+
+  const loadRooms = async () => {
+    setLoading(true)
+    const { data } = await supabase.from('rooms')
+      .select('*').order('created_at', { ascending: false }).limit(50)
+    const list = data ?? []
+    setRooms(list)
+    // Pobierz nicknamy
+    const ids = [...new Set<string>(
+      list.flatMap((r: any) => [r.host_id, r.guest_id].filter(Boolean))
+    )]
+    if (ids.length > 0) {
+      const { data: ps } = await supabase.from('profiles').select('id,username').in('id', ids)
+      if (ps) setProfiles(Object.fromEntries(ps.map((p: any) => [p.id, p.username])))
+    }
+    setLoading(false)
+  }
+
+  useEffect(() => { loadRooms() }, [])
+
+  const nick = (id: string | null) => id ? (profiles[id] ?? id.slice(0,8)) : '—'
+  const statusColor = (s: string) => s === 'playing' ? '#4ade80' : s === 'waiting' ? '#facc15' : 'rgba(255,255,255,0.3)'
+  const statusLabel = (s: string) => s === 'playing' ? '🎮 W grze' : s === 'waiting' ? '⏳ Oczekuje' : s
+
+  return (
+    <div>
+      <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
+        <SectionTitle icon='Pokoje' title='Aktywne Pokoje Online' />
+        <button onClick={loadRooms} style={{padding:'7px 14px',borderRadius:8,background:'rgba(129,140,248,0.1)',border:'1px solid rgba(129,140,248,0.3)',color:'#818cf8',cursor:'pointer',fontSize:'0.8rem'}}>Odswiez</button>
+      </div>
+      {loading ? (
+        <div style={{textAlign:'center' as const,padding:40,color:'rgba(255,255,255,0.3)'}}>Ladowanie...</div>
+      ) : rooms.length === 0 ? (
+        <div style={{textAlign:'center' as const,padding:40,color:'rgba(255,255,255,0.2)',border:'1px dashed rgba(255,255,255,0.08)',borderRadius:12}}>Brak aktywnych pokojow</div>
+      ) : (
+        <div style={{display:'flex',flexDirection:'column' as const,gap:8}}>
+          {rooms.map((r: any) => (
+            <div key={r.id} style={{display:'flex',alignItems:'center',gap:14,padding:'12px 16px',background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:10,flexWrap:'wrap' as const}}>
+              <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'1.4rem',letterSpacing:4,color:'#D4AF37',minWidth:52}}>{r.code}</div>
+              <div style={{flex:1,minWidth:120}}>
+                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:3}}>
+                  <span style={{color:'#D4AF37',fontSize:'0.8rem'}}>👑 {nick(r.host_id)}</span>
+                  {r.guest_id && <><span style={{color:'rgba(255,255,255,0.2)'}}>vs</span><span style={{color:'#C0C0C0',fontSize:'0.8rem'}}>{nick(r.guest_id)}</span></>}
+                </div>
+                <div style={{fontSize:'0.65rem',color:'rgba(255,255,255,0.25)'}}>
+                  {new Date(r.created_at).toLocaleTimeString('pl-PL')}
+                </div>
+              </div>
+              <span style={{padding:'3px 10px',borderRadius:20,fontSize:'0.72rem',background:statusColor(r.status)+'18',color:statusColor(r.status),border:'1px solid '+statusColor(r.status)+'44'}}>
+                {statusLabel(r.status ?? 'waiting')}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function GameHistorySection({history, loading, onLoad}: any) {
-  const [loaded, setLoaded] = useState(false)
+  const [loaded,   setLoaded]   = useState(false)
+  const [profiles, setProfiles] = useState<Record<string,string>>({})
+
   useEffect(() => { if (!loaded) { onLoad(); setLoaded(true) } }, [])
+
+  // Pobierz nicknamy dla wszystkich unikalnych ID z historii
+  useEffect(() => {
+    const ids = [...new Set<string>(
+      history.flatMap((g: any) => [g.winner_id, g.loser_id].filter(Boolean))
+    )]
+    if (ids.length === 0) return
+    supabase.from('profiles').select('id,username').in('id', ids).then(({ data }) => {
+      if (!data) return
+      setProfiles(Object.fromEntries(data.map((p: any) => [p.id, p.username])))
+    })
+  }, [history])
+
+  const nick = (id: string | null) => id ? (profiles[id] ?? id.slice(0, 8)) : '—'
+
   return (
     <div>
       <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:18}}>
@@ -566,15 +669,28 @@ function GameHistorySection({history, loading, onLoad}: any) {
         <div style={{borderRadius:12,border:'1px solid rgba(255,255,255,0.07)',overflow:'hidden'}}>
           <table style={{width:'100%',borderCollapse:'collapse' as const,fontSize:'0.82rem'}}>
             <thead><tr style={{background:'rgba(0,0,0,0.3)'}}>
-              {['DATA','WYNIK','ID ZWYCIEZCY','PUNKTY'].map(h=><th key={h} style={{padding:'10px 12px',textAlign:'left' as const,fontSize:'0.65rem',letterSpacing:2,color:'rgba(255,255,255,0.3)'}}>{h}</th>)}
+              {['DATA','WYNIK','ZWYCIEZCA','PRZEGRANY','PUNKTY'].map(h=><th key={h} style={{padding:'10px 12px',textAlign:'left' as const,fontSize:'0.65rem',letterSpacing:2,color:'rgba(255,255,255,0.3)'}}>{h}</th>)}
             </tr></thead>
             <tbody>
               {history.map((g: any, i: number) => (
                 <tr key={g.id} style={{background:i%2===0?'transparent':'rgba(255,255,255,0.01)',borderBottom:'1px solid rgba(255,255,255,0.04)'}}>
-                  <td style={{padding:'10px 12px',color:'rgba(255,255,255,0.4)',fontSize:'0.75rem'}}>{new Date(g.played_at).toLocaleDateString('pl')}</td>
-                  <td style={{padding:'10px 12px'}}>{g.is_draw?<span style={{color:'#a78bfa',fontSize:'0.8rem'}}>Remis</span>:<span style={{color:'#4ade80',fontSize:'0.8rem'}}>Rozstrzygniety</span>}</td>
-                  <td style={{padding:'10px 12px',color:'#D4AF37',fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,fontSize:'0.75rem'}}>{g.winner_id?.slice(0,8)??'—'}</td>
-                  <td style={{padding:'10px 12px',fontFamily:"'Bebas Neue',sans-serif",color:'#fff',letterSpacing:2}}>{g.winner_score??0}:{g.loser_score??0}</td>
+                  <td style={{padding:'10px 12px',color:'rgba(255,255,255,0.4)',fontSize:'0.75rem'}}>
+                    {new Date(g.played_at).toLocaleDateString('pl-PL',{day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'})}
+                  </td>
+                  <td style={{padding:'10px 12px'}}>
+                    {g.is_draw
+                      ? <span style={{color:'#a78bfa',fontSize:'0.8rem'}}>🤝 Remis</span>
+                      : <span style={{color:'#4ade80',fontSize:'0.8rem'}}>✓ Rozstrzygniety</span>}
+                  </td>
+                  <td style={{padding:'10px 12px',color:'#D4AF37',fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,fontSize:'0.8rem'}}>
+                    {g.is_draw ? '—' : nick(g.winner_id)}
+                  </td>
+                  <td style={{padding:'10px 12px',color:'rgba(255,255,255,0.45)',fontFamily:"'Bebas Neue',sans-serif",letterSpacing:2,fontSize:'0.8rem'}}>
+                    {g.is_draw ? nick(g.winner_id)+' / '+nick(g.loser_id) : nick(g.loser_id)}
+                  </td>
+                  <td style={{padding:'10px 12px',fontFamily:"'Bebas Neue',sans-serif",color:'#fff',letterSpacing:2}}>
+                    {g.winner_score??0}:{g.loser_score??0}
+                  </td>
                 </tr>
               ))}
             </tbody>

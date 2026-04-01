@@ -123,6 +123,7 @@ export interface MPStore {
   showToast:           (text: string) => void
   sendChatMessage:     (text: string) => void
   updateGameSettings:  (s: Partial<{ duelTime: number; categoriesCount: number }>) => void
+  sendInvite:          (targetPlayerId: string) => void
   _broadcastEvent:     (event: MPEvent) => void
 }
 
@@ -155,16 +156,19 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     return { questionId: q?.id ?? '', usedIds: used }
   }
 
-  function buildTiles(cats: (Category & { questions: Question[] })[]) {
+  function buildTiles(cats: (Category & { questions: Question[] })[], categoriesCount?: number) {
     const cfg    = useConfigStore.getState().config
     const preset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
     const { cols, rows } = preset
-    const pool   = shuffle(cats)
+    // Ogranicz liczbę kategorii zgodnie z ustawieniami lobby
+    const limited = categoriesCount && categoriesCount < cats.length
+      ? shuffle(cats).slice(0, categoriesCount)
+      : cats
+    const pool   = shuffle(limited)
     const tiles: Tile[] = Array.from({ length: cols * rows }, (_, i) => {
       const cat  = pool[i % Math.max(pool.length, 1)]
       const x    = i % cols
       const y    = Math.floor(i / cols)
-      // Neutral start: all tiles owned by 'gold', territory changes by winning duels
       const owner: TileOwner = x < Math.ceil(cols / 2) ? 'gold' : 'silver'
       return { x, y, categoryId: cat?.id ?? '', categoryName: cat?.name ?? 'Kategoria', owner }
     })
@@ -291,7 +295,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const ans = get().currentQuestion?.answer ?? '???'
     const cfg = useConfigStore.getState().config
     const key = who === 'host' ? 'timerHost' : 'timerGuest'
-    const pen = Math.max(0, duel[key] - cfg.PASS_PENALTY)
+    const pen = Math.max(0, duel[key] - cfg.MP_PASS_PENALTY)
     get().showFeedback(`⏱ PAS · ${ans}`, 'pass')
     broadcast({ type: 'pass', player: who, answer: ans })
 
@@ -320,7 +324,10 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         break
 
       case 'game_start':
-        if (role === 'guest') set({ status: 'playing' })
+        if (role === 'guest') {
+          set({ status: 'playing' })
+          useAuthStore.getState().setInGame()
+        }
         break
 
       // ── Duel lifecycle ───────────────────────────────────────────────────────
@@ -329,12 +336,14 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
           const cfg = useConfigStore.getState().config
           const cat = get().categories.find(c => c.id === ev.categoryId)
           const q   = cat?.questions.find(q => q.id === ev.questionId) ?? null
+          // Używaj czasu z eventu (ustawienia hosta), fallback do globalnego configa
+          const duelTime = ev.timerHost ?? cfg.MP_DUEL_TIME
           set({
             duel: {
               tileIdx: ev.tileIdx, categoryId: ev.categoryId,
               categoryName: ev.categoryName, emoji: ev.emoji,
               questionId: ev.questionId, usedQuestionIds: [ev.questionId],
-              timerHost: cfg.DUEL_TIME, timerGuest: cfg.DUEL_TIME,
+              timerHost: duelTime, timerGuest: duelTime,
               active: ev.firstActive, started: false, paused: false, lang: ev.lang,
             },
             currentQuestion: q, winner: null, feedback: { text: '', type: '' }, blockInput: false,
@@ -450,6 +459,17 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       case 'opponent_name':
         set({ opponentName: ev.name, opponentAvatar: ev.avatar })
         break
+
+      case 'opponent_left':
+        // Przeciwnik opuścił pokój — wróć do lobby z komunikatem
+        stopTicker()
+        get().showToast('🚪 Przeciwnik opuścił pokój')
+        set({
+          status: 'finished',
+          duel: null, currentQuestion: null, winner: null,
+          countdown: null, blockInput: false, feedback: { text:'', type:'' },
+        })
+        break
     }
   }
 
@@ -548,7 +568,8 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       set({ status: 'creating', error: null, playerName })
 
       await get().loadCategories()
-      const { tiles, cols, rows } = buildTiles(get().categories)
+      const { gameSettings } = get()
+      const { tiles, cols, rows } = buildTiles(get().categories, gameSettings.categoriesCount)
       const cfg    = useConfigStore.getState().config
       const gs: MPGameState = { tiles, cursor: Math.floor(tiles.length / 2) - 1, duel: null }
 
@@ -629,16 +650,25 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       set({ status: 'playing' })
       broadcast({ type: 'game_start' })
       writeDB({ status: 'playing' })
+      // Ustaw status 'in_game' dla hosta
+      useAuthStore.getState().setInGame()
     },
 
     leaveRoom: async () => {
-      const { channel, roomId, role } = get()
+      const { channel, roomId, role, status } = get()
       stopTicker()
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null }
+      // Powiadom przeciwnika o wyjściu zanim odsubskrybujemy kanał
+      if (channel && status !== 'idle' && status !== 'finished') {
+        broadcast({ type: 'opponent_left' })
+        await new Promise(r => setTimeout(r, 150)) // daj czas na dostarczenie eventu
+      }
       if (channel) await channel.unsubscribe()
       if (roomId && role === 'host') {
         await supabase.from('game_rooms').update({ status: 'finished', updated_at: new Date().toISOString() }).eq('id', roomId)
       }
+      // Przywróć status 'online' po wyjściu z gry
+      useAuthStore.getState().setOnline()
       set({
         roomId: null, roomCode: null, role: null, status: 'idle',
         opponentId: null, opponentName: null, opponentAvatar: '🎮',
@@ -662,7 +692,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     },
 
     startChallenge: () => {
-      const { role, duel, tiles, cursor, categories } = get()
+      const { role, duel, tiles, cursor, categories, gameSettings } = get()
       if (role !== 'host' || duel) return
       const tile = tiles[cursor]
       if (!tile) return
@@ -670,21 +700,22 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       const qs  = cat?.questions ?? []
       if (!qs.length) { get().showToast('❌ Brak pytań w tej kategorii'); return }
 
-      const cfg         = useConfigStore.getState().config
+      // Używaj czasu z ustawień lobby, nie z globalnego configa
+      const duelTime    = gameSettings.duelTime
       const q           = qs[Math.floor(Math.random() * qs.length)]
       const lang        = (cat?.lang ?? 'pl-PL') as SpeechLang
-      // FAIR: random first player each duel
       const firstActive: MPActivePlayer = Math.random() < 0.5 ? 'host' : 'guest'
 
       const newDuel: MPDuelState = {
         tileIdx: cursor, categoryId: tile.categoryId, categoryName: tile.categoryName,
         emoji: getCatEmoji(tile.categoryName, cat?.emoji),
         questionId: q.id, usedQuestionIds: [q.id],
-        timerHost: cfg.DUEL_TIME, timerGuest: cfg.DUEL_TIME,
+        timerHost: duelTime, timerGuest: duelTime,
         active: firstActive, started: false, paused: false, lang,
       }
       set({ duel: newDuel, currentQuestion: q, winner: null, feedback: { text:'', type:'' }, blockInput: false })
-      broadcast({ type: 'duel_start', tileIdx: cursor, categoryId: tile.categoryId, categoryName: tile.categoryName, emoji: newDuel.emoji, questionId: q.id, lang, firstActive })
+      // Broadcastuj timer żeby gość też miał właściwy czas (nie z globalnego configu)
+      broadcast({ type: 'duel_start', tileIdx: cursor, categoryId: tile.categoryId, categoryName: tile.categoryName, emoji: newDuel.emoji, questionId: q.id, lang, firstActive, timerHost: duelTime, timerGuest: duelTime })
     },
 
     startFight: () => {
@@ -774,6 +805,25 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       const next = { ...get().gameSettings, ...s }
       set({ gameSettings: next })
       broadcast({ type: 'game_settings', duelTime: next.duelTime, categoriesCount: next.categoriesCount })
+    },
+
+    sendInvite: (targetPlayerId) => {
+      const { roomCode, playerName } = get()
+      if (!roomCode) return
+      const fromName   = playerName
+      const fromId     = effectivePlayerId()
+      // Używamy kanału dedykowanego dla gracza — nie wymaga nowej tabeli w bazie
+      const invChannel = supabase.channel(`invites:${targetPlayerId}`)
+      invChannel.subscribe((st) => {
+        if (st === 'SUBSCRIBED') {
+          invChannel.send({
+            type: 'broadcast', event: 'invite',
+            payload: { roomCode, fromName, fromId },
+          }).then(() => {
+            setTimeout(() => invChannel.unsubscribe(), 1500)
+          })
+        }
+      })
     },
 
     _broadcastEvent: (event) => broadcast(event),

@@ -259,10 +259,22 @@ export function isAnswerMatch(
   return phrasesMatchFast(nSpoken, matchData, strict)
 }
 
+/**
+ * Komendy pas — rozpoznawane jak w programie "The Floor".
+ * Sprawdza czy słowo-klucz jest gdziekolwiek w transkrypcie
+ * (początek, koniec, środek, samodzielnie).
+ */
+export const PASS_WORDS = ['pass', 'pas', 'dalej', 'nastepne', 'nastepny',
+  'nastepnie', 'pomijam', 'pomin', 'pomijamy', 'skip', 'przejdz', 'kolejne'] as const
+
 export function isPassCommand(spoken: string): boolean {
   const n = normalizeText(spoken)
-  return ['pass', 'pas', 'dalej', 'nastepne', 'nastepny', 'skip', 'pomin']
-    .some(w => n === w || n.startsWith(w + ' ') || n.endsWith(' ' + w))
+  return PASS_WORDS.some(w =>
+    n === w ||
+    n.startsWith(w + ' ') ||
+    n.endsWith(' ' + w) ||
+    n.includes(' ' + w + ' ')
+  )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -301,14 +313,14 @@ export function useSpeechRecognition({
     if (!SRGList) return
 
     try {
-      const words  = [answer, ...synonyms].filter(Boolean)
+      const words  = [answer, ...synonyms, ...PASS_WORDS].filter(Boolean)
         .flatMap(w => {
           const n = normalizeText(w)
           return [n, stemPhrase(n)].filter(Boolean)
         })
         .filter((v, i, a) => a.indexOf(v) === i)  // deduplicate
 
-      // JSGF grammar format
+      // JSGF grammar format — answers + pass commands
       const jsgf = `#JSGF V1.0; grammar answers; public <answer> = ${words.join(' | ')};`
       const gl   = new SRGList()
       gl.addFromString(jsgf, 1.0)

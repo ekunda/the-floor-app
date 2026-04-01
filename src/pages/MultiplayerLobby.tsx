@@ -16,7 +16,8 @@ import { useMultiplayerStore } from '../store/useMultiplayerStore'
 import { useAuthStore } from '../store/useAuthStore'
 import { supabase } from '../lib/supabase'
 
-interface OnlinePlayer { id: string; username: string; avatar: string; xp: number; wins: number }
+interface OnlinePlayer { id: string; username: string; avatar: string; xp: number; wins: number; status: string }
+interface Invitation { roomCode: string; fromName: string; fromId: string }
 
 // ── Shared styles ─────────────────────────────────────────────────────────────
 const G = {
@@ -47,11 +48,22 @@ function SettingBtn({ label, active, onClick }: { label: string; active: boolean
   )
 }
 
+/** Returns dot color + label based on player status */
+function StatusDot({ status }: { status: string }) {
+  const isInGame = status === 'in_game'
+  const color = isInGame ? '#FBBF24' : '#4ade80'
+  const label = isInGame ? 'W GRZE' : 'ONLINE'
+  return (
+    <div title={label} style={{ position:'absolute', bottom:0, right:0, width:8, height:8, borderRadius:'50%', background:color, border:'1.5px solid #080808', animation:'pulse 2s ease-in-out infinite' }} />
+  )
+}
+
 const CSS = `
   @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Montserrat:wght@400;600;700&display=swap');
   @keyframes wp{0%,100%{opacity:.2;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
   @keyframes fadeInUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
   @keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+  @keyframes slideDown{from{opacity:0;transform:translateY(-12px)}to{opacity:1;transform:translateY(0)}}
   input::placeholder{color:rgba(255,255,255,0.18)}
   ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:rgba(255,255,255,0.1);border-radius:4px}
   @media(max-width:660px){.mpgrid{grid-template-columns:1fr!important}}
@@ -66,7 +78,7 @@ export default function MultiplayerLobby() {
     playerName, setPlayerName, status, roomCode, error,
     createRoom, joinRoom, startGame, leaveRoom, role,
     chatMessages, sendChatMessage, gameSettings, updateGameSettings,
-    opponentName, opponentAvatar, guestReady,
+    opponentName, opponentAvatar, guestReady, sendInvite,
   } = useMultiplayerStore()
 
   const [nameInput,     setNameInput]     = useState(user?.username || playerName || '')
@@ -78,7 +90,13 @@ export default function MultiplayerLobby() {
   const [codeCopied,    setCodeCopied]    = useState(false)
   const [onlinePlayers, setOnlinePlayers] = useState<OnlinePlayer[]>([])
   const [searchQ,       setSearchQ]       = useState('')
-  const chatEndRef = useRef<HTMLDivElement>(null)
+  const [invitation,    setInvitation]    = useState<Invitation | null>(null)
+  const [invitedIds,    setInvitedIds]    = useState<Set<string>>(new Set())
+  const chatEndRef  = useRef<HTMLDivElement>(null)
+  const searchQRef  = useRef(searchQ)
+
+  // Keep ref in sync for use inside interval (avoids stale closure)
+  useEffect(() => { searchQRef.current = searchQ }, [searchQ])
 
   useEffect(() => { SoundEngine.startBg('bgMusic', 0.25); return () => SoundEngine.stopBg(400) }, [])
   useEffect(() => { fetchConfig() }, [])
@@ -86,14 +104,40 @@ export default function MultiplayerLobby() {
   useEffect(() => { if (status === 'playing' && roomCode) { SoundEngine.stopBg(300); navigate('/multiplayer/room/' + roomCode) } }, [status, roomCode])
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
+  // ── Player list: fetch on mount and refresh every 15s using ref (no stale closure) ──
   const searchPlayers = async (q: string) => {
-    const query = supabase.from('profiles').select('id,username,avatar,xp,wins').eq('status','online').order('xp',{ascending:false}).limit(15)
+    const query = supabase
+      .from('profiles')
+      .select('id,username,avatar,xp,wins,status')
+      .neq('status', 'offline')
+      .order('xp', { ascending: false })
+      .limit(20)
     if (q.trim()) query.ilike('username', `%${q.trim()}%`)
     const { data } = await query
     setOnlinePlayers((data ?? []) as OnlinePlayer[])
   }
-  useEffect(() => { searchPlayers(''); const iv = setInterval(() => searchPlayers(searchQ), 15000); return () => clearInterval(iv) }, [])
-  useEffect(() => { const t = setTimeout(() => searchPlayers(searchQ), 350); return () => clearTimeout(t) }, [searchQ])
+
+  useEffect(() => {
+    searchPlayers('')
+    const iv = setInterval(() => searchPlayers(searchQRef.current), 15_000)
+    return () => clearInterval(iv)
+  }, [])
+
+  // Debounced search on input change
+  useEffect(() => {
+    const t = setTimeout(() => searchPlayers(searchQ), 350)
+    return () => clearTimeout(t)
+  }, [searchQ])
+
+  // ── Invite subscription (only when logged in) ──────────────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    const ch = supabase.channel(`invites:${user.id}`)
+    ch.on('broadcast', { event: 'invite' }, ({ payload }) => {
+      setInvitation({ roomCode: payload.roomCode, fromName: payload.fromName, fromId: payload.fromId })
+    }).subscribe()
+    return () => { ch.unsubscribe() }
+  }, [user?.id])
 
   const handleCreate = async () => {
     if (loadingCreate) return
@@ -108,9 +152,27 @@ export default function MultiplayerLobby() {
     try { await joinRoom(codeInput.trim()) } finally { setLoadingJoin(false) }
   }
 
+  const handleAcceptInvite = () => {
+    if (!invitation) return
+    const code = invitation.roomCode
+    setInvitation(null)
+    setCodeInput(code)
+    joinRoom(code)
+  }
+
   const handleLeave = async () => { await leaveRoom(); navigate('/') }
   const handleSendChat = () => { const t = chatInput.trim(); if (!t) return; sendChatMessage(t); setChatInput('') }
   const handleCopyCode = () => { if (!roomCode) return; navigator.clipboard.writeText(roomCode); setCodeCopied(true); setTimeout(() => setCodeCopied(false), 1800) }
+
+  const handleInvite = (playerId: string) => {
+    sendInvite(playerId)
+    setInvitedIds(prev => new Set(prev).add(playerId))
+    // Reset invite button after 5s
+    setTimeout(() => setInvitedIds(prev => { const n = new Set(prev); n.delete(playerId); return n }), 5000)
+  }
+
+  // Can send invite only when user has an open (waiting) room
+  const canInvite = status === 'waiting' && role === 'host'
 
   // ── IN LOBBY / WAITING ROOM ────────────────────────────────────────────────
   const inLobby = status === 'waiting' || status === 'lobby'
@@ -264,6 +326,31 @@ export default function MultiplayerLobby() {
       <div style={G.grid} />
       <style>{CSS}</style>
 
+      {/* ── Invitation banner ───────────────────────────────────────────────── */}
+      {invitation && (
+        <div style={{ position:'fixed', top:16, left:'50%', transform:'translateX(-50%)', zIndex:1000, animation:'slideDown 0.25s ease', maxWidth:400, width:'calc(100% - 32px)' }}>
+          <div style={{ background:'linear-gradient(135deg,#1a1a0d,#141400)', border:'1px solid rgba(212,175,55,0.4)', borderRadius:14, padding:'14px 18px', boxShadow:'0 8px 40px rgba(212,175,55,0.15)' }}>
+            <div style={{ display:'flex', alignItems:'center', gap:10, marginBottom:12 }}>
+              <div style={{ fontSize:'1.4rem' }}>📨</div>
+              <div>
+                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:3, color:'#D4AF37' }}>ZAPROSZENIE DO GRY</div>
+                <div style={{ fontSize:'0.75rem', color:'rgba(255,255,255,0.5)', marginTop:1 }}>
+                  <strong style={{ color:'rgba(255,255,255,0.8)' }}>{invitation.fromName}</strong> zaprasza Cię do pokoju <strong style={{ color:'#D4AF37', letterSpacing:2 }}>{invitation.roomCode}</strong>
+                </div>
+              </div>
+            </div>
+            <div style={{ display:'flex', gap:8 }}>
+              <button onClick={handleAcceptInvite} style={{ flex:1, padding:'8px 0', borderRadius:8, background:'rgba(74,222,128,0.15)', border:'1px solid rgba(74,222,128,0.4)', color:'#4ade80', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:3, cursor:'pointer', transition:'all 0.15s' }}>
+                ✓ DOŁĄCZ
+              </button>
+              <button onClick={() => setInvitation(null)} style={{ padding:'8px 14px', borderRadius:8, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.4)', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', cursor:'pointer' }}>
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="mpgrid" style={{ position:'relative', zIndex:1, width:'100%', maxWidth:900, display:'grid', gridTemplateColumns:'1fr 1fr', gap:14, alignItems:'start' }}>
 
         {/* LEFT — Create / Join */}
@@ -348,7 +435,13 @@ export default function MultiplayerLobby() {
 
         {/* RIGHT — Online players */}
         <div style={G.card()}>
-          <div style={{ ...G.label, marginBottom:10 }}>🔍 GRACZE ONLINE</div>
+          <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
+            <div style={G.label}>🔍 GRACZE ONLINE</div>
+            <div style={{ fontSize:'0.6rem', color:'rgba(255,255,255,0.2)', letterSpacing:1, display:'flex', gap:8 }}>
+              <span style={{ display:'flex', alignItems:'center', gap:3 }}><span style={{ width:6, height:6, borderRadius:'50%', background:'#4ade80', display:'inline-block' }} /> ONLINE</span>
+              <span style={{ display:'flex', alignItems:'center', gap:3 }}><span style={{ width:6, height:6, borderRadius:'50%', background:'#FBBF24', display:'inline-block' }} /> W GRZE</span>
+            </div>
+          </div>
           <input style={{ ...G.inp, marginBottom:12 }} value={searchQ} placeholder="Szukaj po nicku…" onChange={e => setSearchQ(e.target.value)} />
 
           <div style={{ display:'flex', flexDirection:'column', gap:6, marginBottom:16 }}>
@@ -357,25 +450,42 @@ export default function MultiplayerLobby() {
                 <div style={{ fontSize:'1.6rem', marginBottom:6 }}>🌙</div>Brak graczy online
               </div>
             )}
-            {onlinePlayers.map(p => (
-              <div key={p.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'rgba(255,255,255,0.03)', borderRadius:10, border:'1px solid rgba(255,255,255,0.06)' }}>
-                <div style={{ width:34, height:34, borderRadius:'50%', background:'rgba(255,255,255,0.06)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.15rem', flexShrink:0, position:'relative' }}>
-                  {p.avatar}
-                  <div style={{ position:'absolute', bottom:0, right:0, width:7, height:7, borderRadius:'50%', background:'#4ade80', border:'1.5px solid #080808', animation:'pulse 2s ease-in-out infinite' }} />
+            {onlinePlayers.map(p => {
+              const alreadyInvited = invitedIds.has(p.id)
+              const isInGame = p.status === 'in_game'
+              const isMe = p.id === user?.id
+              return (
+                <div key={p.id} style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'rgba(255,255,255,0.03)', borderRadius:10, border:'1px solid rgba(255,255,255,0.06)', opacity: isMe ? 0.5 : 1 }}>
+                  <div style={{ width:34, height:34, borderRadius:'50%', background:'rgba(255,255,255,0.06)', display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.15rem', flexShrink:0, position:'relative' }}>
+                    {p.avatar}
+                    <StatusDot status={p.status} />
+                  </div>
+                  <div style={{ flex:1, minWidth:0 }}>
+                    <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.88rem', letterSpacing:2, color:'#D4AF37', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.username}{isMe ? ' (ty)' : ''}</div>
+                    <div style={{ fontSize:'0.6rem', color:'rgba(255,255,255,0.22)' }}>
+                      {p.wins} wygranych · {p.xp} XP
+                      {isInGame && <span style={{ marginLeft:5, color:'#FBBF24' }}>· w grze</span>}
+                    </div>
+                  </div>
+                  {canInvite && !isMe && !isInGame && (
+                    <button
+                      onClick={() => handleInvite(p.id)}
+                      disabled={alreadyInvited}
+                      style={{ padding:'4px 10px', borderRadius:7, fontSize:'0.7rem', letterSpacing:1, fontFamily:"'Bebas Neue',sans-serif", cursor: alreadyInvited ? 'default' : 'pointer', background: alreadyInvited ? 'rgba(74,222,128,0.08)' : 'rgba(212,175,55,0.1)', border:`1px solid ${alreadyInvited ? 'rgba(74,222,128,0.25)' : 'rgba(212,175,55,0.25)'}`, color: alreadyInvited ? '#4ade80' : 'rgba(212,175,55,0.8)', transition:'all 0.15s', flexShrink:0 }}
+                    >
+                      {alreadyInvited ? '✓ WYSŁANO' : '✉ ZAPROŚ'}
+                    </button>
+                  )}
                 </div>
-                <div style={{ flex:1, minWidth:0 }}>
-                  <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.88rem', letterSpacing:2, color:'#D4AF37', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.username}</div>
-                  <div style={{ fontSize:'0.6rem', color:'rgba(255,255,255,0.22)' }}>{p.wins} wygranych · {p.xp} XP</div>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
 
           <div style={{ padding:'12px 14px', background:'rgba(99,102,241,0.05)', border:'1px solid rgba(99,102,241,0.12)', borderRadius:10 }}>
             <div style={{ fontSize:'0.7rem', color:'rgba(255,255,255,0.35)', lineHeight:1.7 }}>
               <strong style={{ color:'rgba(99,102,241,0.8)', fontFamily:"'Bebas Neue',sans-serif", letterSpacing:2, fontSize:'0.78rem' }}>ZASADY</strong><br />
               1. Zaloguj się i utwórz pokój<br />
-              2. Podaj 4-literowy kod znajomemu<br />
+              2. Zaproś gracza przyciskiem <strong style={{ color:'#D4AF37' }}>✉ ZAPROŚ</strong> lub podaj kod<br />
               3. Obaj widzicie pokój z czatem<br />
               4. Host klika <strong style={{ color:'#4ade80' }}>ROZPOCZNIJ</strong> gdy jesteście gotowi<br />
               5. Gra 1v1 na planszy kategorii!

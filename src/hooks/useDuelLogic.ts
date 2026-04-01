@@ -84,7 +84,7 @@ export function useDuelLogic(): DuelLogicResult {
   const voicePassRef        = useRef(voicePassEnabled)
   const matchDataRef        = useRef<MatchData | null>(null)
   const updateGrammarRef    = useRef<((a: string, s?: string[]) => void) | null>(null)
-  const handlePassRef       = useRef<() => void>(() => {})
+  const handlePassRef       = useRef<(fromVoice?: boolean) => void>(() => {})
   const handleCorrectRef    = useRef<(p: 1 | 2, fromVoice?: boolean) => void>(() => {})
   const handleCloseRef      = useRef<() => void>(() => {})
   const matchedQIdRef       = useRef<string | null>(null)
@@ -254,7 +254,7 @@ export function useDuelLogic(): DuelLogicResult {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markCorrect])
 
-  const handlePass = useCallback(() => {
+  const handlePass = useCallback((fromVoice = false) => {
     if (!duelRef.current?.started || blockRef.current || countdownRef.current) return
     const d   = duelRef.current
     const ans = d.currentQuestion?.answer ?? '???'
@@ -274,7 +274,7 @@ export function useDuelLogic(): DuelLogicResult {
     }
 
     SoundEngine.play('buzzer', 0.4)
-    showFeedback(`⏱ PAS  ·  ${ans}`, 'pass')
+    showFeedback(fromVoice ? `🎤 PAS  ·  ${ans}` : `⏱ PAS  ·  ${ans}`, 'pass')
     pass()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pass, endDuelWithWinner, maxPasses])
@@ -299,7 +299,7 @@ export function useDuelLogic(): DuelLogicResult {
   const firePas = useCallback((questionId: string | null) => {
     if (passedQIdRef.current === questionId) return
     passedQIdRef.current = questionId
-    handlePassRef.current()
+    handlePassRef.current(true)  // fromVoice=true → pokazuje 🎤 PAS
   }, [])
 
   const tryVoiceMatch = useCallback((transcript: string, isFinal: boolean) => {
