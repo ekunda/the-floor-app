@@ -106,24 +106,40 @@ export default function MultiplayerLobby() {
   useEffect(() => { if (status === 'playing' && roomCode) { SoundEngine.stopBg(300); navigate('/multiplayer/room/' + roomCode) } }, [status, roomCode])
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [chatMessages])
 
-  // ── Player list: fetch on mount and refresh every 15s using ref (no stale closure) ──
+  // ── Player list ───────────────────────────────────────────────────────────
+  // Only show players whose last_seen is within 2 minutes (handles crashes/
+  // force-close where beforeunload cannot fire). Excludes the current user.
   const searchPlayers = async (q: string) => {
+    const since = new Date(Date.now() - 2 * 60 * 1000).toISOString()
     const query = supabase
       .from('profiles')
       .select('id,username,avatar,xp,wins,status')
       .neq('status', 'offline')
+      .gte('last_seen', since)
       .order('xp', { ascending: false })
       .limit(20)
     if (q.trim()) query.ilike('username', `%${q.trim()}%`)
     const { data } = await query
-    setOnlinePlayers((data ?? []) as OnlinePlayer[])
+    const rows = (data ?? []) as OnlinePlayer[]
+    // Exclude self from list
+    setOnlinePlayers(user?.id ? rows.filter(p => p.id !== user.id) : rows)
   }
 
   useEffect(() => {
     searchPlayers('')
-    const iv = setInterval(() => searchPlayers(searchQRef.current), 15_000)
-    return () => clearInterval(iv)
-  }, [])
+    // Poll every 10s as safety net
+    const iv = setInterval(() => searchPlayers(searchQRef.current), 10_000)
+
+    // Realtime subscription — instant updates when any profile changes status/last_seen
+    const rt = supabase
+      .channel('profiles-presence')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+        searchPlayers(searchQRef.current)
+      })
+      .subscribe()
+
+    return () => { clearInterval(iv); rt.unsubscribe() }
+  }, [user?.id])
 
   // Debounced search on input change
   useEffect(() => {

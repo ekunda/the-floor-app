@@ -106,12 +106,12 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
     set({ loading: false })
 
-    // ── Heartbeat: aktualizuje last_seen co 60s ────────────────────────────
+    // ── Heartbeat: aktualizuje last_seen co 30s (threshold filtra = 2 min) ──
     setInterval(() => {
       const { user } = get()
       if (!user) return
       supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id)
-    }, 60_000)
+    }, 30_000)
 
     // ── beforeunload: ustaw offline gdy użytkownik zamknie kartę ──────────
     // keepalive: true gwarantuje wysłanie żądania mimo zamknięcia strony
