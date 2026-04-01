@@ -74,6 +74,13 @@ function generateCode(): string {
   for (let i = 0; i < 4; i++) code += chars[Math.floor(Math.random() * chars.length)]
   return code
 }
+export const MP_MODES = {
+  classic:  { label: 'KLASYCZNY', emoji: '🏛️', duelTime: 45, passPenalty: 2,  categoriesCount: 12, desc: '45s · kara -2s · 12 pól' },
+  blitz:    { label: 'BLITZ',     emoji: '⚡',  duelTime: 15, passPenalty: 5,  categoriesCount: 9,  desc: '15s · kara -5s · 9 pól' },
+  hardcore: { label: 'HARDCORE',  emoji: '💀',  duelTime: 30, passPenalty: 15, categoriesCount: 16, desc: '30s · kara -15s · 16 pól' },
+} as const
+export type MPGameMode = keyof typeof MP_MODES
+
 export function getCatEmoji(name: string, customEmoji?: string): string {
   if (customEmoji && customEmoji !== '🎯') return customEmoji
   return '🎯'
@@ -109,7 +116,7 @@ export interface MPStore {
   toastText:      string
   channel:        ReturnType<typeof supabase.channel> | null
   chatMessages:   { from: string; text: string; ts: number }[]
-  gameSettings:   { duelTime: number; categoriesCount: number }
+  gameSettings:   { duelTime: number; categoriesCount: number; gameMode: string; passPenalty: number }
   guestReady:     boolean  // host sees this when guest joined lobby
 
   setPlayerName:       (name: string) => void
@@ -127,7 +134,7 @@ export interface MPStore {
   showFeedback:        (text: string, type: FeedbackType) => void
   showToast:           (text: string) => void
   sendChatMessage:     (text: string) => void
-  updateGameSettings:  (s: Partial<{ duelTime: number; categoriesCount: number }>) => void
+  updateGameSettings:  (s: Partial<{ duelTime: number; categoriesCount: number; gameMode: string; passPenalty: number }>) => void
   sendInvite:          (targetPlayerId: string) => void
   _broadcastEvent:     (event: MPEvent) => void
 }
@@ -200,6 +207,85 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     if (patch.guest_score !== undefined) upd.guest_score = patch.guest_score
     if (patch.status      !== undefined) upd.status      = patch.status
     await supabase.from('game_rooms').update(upd).eq('id', roomId)
+  }
+
+  /** Award XP to both players at game end. HOST only. */
+  async function awardXP(
+    hostId: string, guestId: string,
+    winnerRole: MPActivePlayer | 'draw',
+    categoriesCount: number,
+    forfeit = false,
+  ) {
+    const xpWin  = forfeit ? Math.round(categoriesCount * 1.5) : categoriesCount
+    const xpLoss = forfeit ? -Math.floor(categoriesCount / 2) : 0
+    const xpDraw = Math.floor(categoriesCount / 2)
+
+    const [{ data: hp }, { data: gp }] = await Promise.all([
+      supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', hostId).maybeSingle(),
+      supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', guestId).maybeSingle(),
+    ])
+    if (!hp || !gp) return
+
+    let hXp = hp.xp ?? 0,  hW = hp.wins ?? 0,  hL = hp.losses ?? 0,  hStr = hp.win_streak ?? 0,  hBest = hp.best_streak ?? 0
+    let gXp = gp.xp ?? 0,  gW = gp.wins ?? 0,  gL = gp.losses ?? 0,  gStr = gp.win_streak ?? 0,  gBest = gp.best_streak ?? 0
+
+    if (winnerRole === 'host') {
+      hXp += xpWin;  hW++;  hStr++;  hBest = Math.max(hBest, hStr)
+      gXp = Math.max(0, gXp + xpLoss);  gL++;  gStr = 0
+    } else if (winnerRole === 'guest') {
+      gXp += xpWin;  gW++;  gStr++;  gBest = Math.max(gBest, gStr)
+      hXp = Math.max(0, hXp + xpLoss);  hL++;  hStr = 0
+    } else {
+      hXp += xpDraw;  gXp += xpDraw;  hStr = 0;  gStr = 0
+    }
+
+    await Promise.all([
+      supabase.from('profiles').update({ xp: hXp, wins: hW, losses: hL, win_streak: hStr, best_streak: hBest, updated_at: new Date().toISOString() }).eq('id', hostId),
+      supabase.from('profiles').update({ xp: gXp, wins: gW, losses: gL, win_streak: gStr, best_streak: gBest, updated_at: new Date().toISOString() }).eq('id', guestId),
+    ])
+
+    // Save to game_history
+    if (winnerRole !== 'draw') {
+      const winnerId = winnerRole === 'host' ? hostId : guestId
+      const loserId  = winnerRole === 'host' ? guestId : hostId
+      const { hostScore, guestScore } = get()
+      await supabase.from('game_history').insert({
+        winner_id: winnerId, loser_id: loserId,
+        winner_score: winnerRole === 'host' ? hostScore : guestScore,
+        loser_score:  winnerRole === 'host' ? guestScore : hostScore,
+        is_draw: false,
+      }).select()
+    }
+
+    // Refresh the local auth user's profile
+    useAuthStore.getState().refreshProfile()
+  }
+
+  /** After each round: check if one side has ≥75% tiles → game over. HOST only. */
+  function hostCheckGameEnd(tiles: Tile[]): boolean {
+    const total  = tiles.length
+    const gold   = tiles.filter(t => t.owner === 'gold').length
+    const silver = tiles.filter(t => t.owner === 'silver').length
+    const winAt  = Math.ceil(total * 0.75)
+    if (gold < winAt && silver < winAt) return false
+
+    const winnerRole: MPActivePlayer | 'draw' = gold > silver ? 'host' : silver > gold ? 'guest' : 'draw'
+    const { opponentId, gameSettings } = get()
+    const hostId  = effectivePlayerId()
+    const guestId = opponentId ?? ''
+
+    stopTicker()
+    set({ duel: null, currentQuestion: null, winner: winnerRole === 'draw' ? 'draw' : winnerRole, countdown: null, blockInput: false })
+    broadcast({ type: 'round_end', winner: winnerRole, tileIdx: -1, hostScore: gold, guestScore: silver })
+
+    setTimeout(async () => {
+      broadcast({ type: 'game_end' })
+      set({ status: 'finished' })
+      await writeDB({ status: 'finished' })
+      if (hostId && guestId) await awardXP(hostId, guestId, winnerRole, gameSettings.categoriesCount)
+    }, 3000)
+
+    return true
   }
 
   /** Upsert profile — never creates duplicates, never overwrites existing stats */
@@ -309,7 +395,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const ans = get().currentQuestion?.answer ?? '???'
     const cfg = useConfigStore.getState().config
     const key = who === 'host' ? 'timerHost' : 'timerGuest'
-    const pen = Math.max(0, duel[key] - cfg.MP_PASS_PENALTY)
+    const pen = Math.max(0, duel[key] - get().gameSettings.passPenalty)
     get().showFeedback(`⏱ PAS · ${ans}`, 'pass')
     broadcast({ type: 'pass', player: who, answer: ans })
 
@@ -467,23 +553,32 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         break
 
       case 'game_settings':
-        set({ gameSettings: { duelTime: ev.duelTime, categoriesCount: ev.categoriesCount } })
+        set({ gameSettings: { duelTime: ev.duelTime, categoriesCount: ev.categoriesCount, gameMode: ev.gameMode ?? 'classic', passPenalty: ev.passPenalty ?? 2 } })
         break
 
       case 'opponent_name':
         set({ opponentName: ev.name, opponentAvatar: ev.avatar })
         break
 
-      case 'opponent_left':
+      case 'opponent_left': {
         // Przeciwnik opuścił pokój — wróć do lobby z komunikatem
         stopTicker()
         get().showToast('🚪 Przeciwnik opuścił pokój')
+        // Forfeit XP: opponent left, current player (guest) wins
+        const { status: curStatus, opponentId, gameSettings: gsCur, role: curRole } = get()
+        if (curStatus === 'playing' && curRole === 'guest' && opponentId) {
+          const myId    = effectivePlayerId()
+          const theirId = opponentId
+          // Guest won by forfeit — award XP (guest = winner, opponent = host who left)
+          awardXP(theirId, myId, 'guest', gsCur.categoriesCount, true).catch(() => {})
+        }
         set({
           status: 'finished',
           duel: null, currentQuestion: null, winner: null,
           countdown: null, blockInput: false, feedback: { text:'', type:'' },
         })
         break
+      }
     }
   }
 
@@ -510,8 +605,10 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
             const name   = d?.username ?? 'GOŚĆ'
             const avatar = d?.avatar   ?? '🎮'
             set({ status: 'lobby', opponentId: room.guest_id!, opponentName: name, opponentAvatar: avatar, guestReady: true })
-            // Tell guest our name
+            // Tell guest our name + current settings
+            const gs = get().gameSettings
             broadcast({ type: 'opponent_name', name: get().playerName, avatar: effectivePlayerAvatar() })
+            setTimeout(() => broadcast({ type: 'game_settings', duelTime: gs.duelTime, categoriesCount: gs.categoriesCount, gameMode: gs.gameMode, passPenalty: gs.passPenalty }), 300)
           })
         }
 
@@ -550,7 +647,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     feedback:       { text: '', type: '' },
     winner:         null, countdown: null, error: null, toastText: '', channel: null,
     chatMessages:   [],
-    gameSettings:   { duelTime: 30, categoriesCount: 9 },
+    gameSettings:   { duelTime: 45, categoriesCount: 12, gameMode: 'classic', passPenalty: 2 },
     guestReady:     false,
 
     setPlayerName: (name) => { setLocalPlayerName(name); set({ playerName: name }) },
@@ -674,6 +771,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       const cursor = Math.floor(tiles.length / 2) - 1
 
       set({ status: 'playing', tiles, cursor, gridCols: cols, gridRows: rows })
+      broadcast({ type: 'game_settings', duelTime: gameSettings.duelTime, categoriesCount: gameSettings.categoriesCount, gameMode: gameSettings.gameMode, passPenalty: gameSettings.passPenalty })
       broadcast({ type: 'game_start' })
       writeDB({ tiles, cursor, status: 'playing' })
       // Ustaw status 'in_game' dla hosta
@@ -681,9 +779,15 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     },
 
     leaveRoom: async () => {
-      const { channel, roomId, role, status } = get()
+      const { channel, roomId, role, status, opponentId, gameSettings } = get()
       stopTicker()
       if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null }
+      // Forfeit XP: leaving an active game counts as a loss
+      if (status === 'playing' && role === 'host' && opponentId) {
+        const hostId  = effectivePlayerId()
+        const guestId = opponentId
+        await awardXP(hostId, guestId, 'guest', gameSettings.categoriesCount, true)
+      }
       // Powiadom przeciwnika o wyjściu zanim odsubskrybujemy kanał
       if (channel && status !== 'idle' && status !== 'finished') {
         broadcast({ type: 'opponent_left' })
@@ -802,8 +906,11 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
       stopTicker()
       set({ duel: null, currentQuestion: null, winner: null, countdown: null, blockInput: false, feedback: { text:'', type:'' } })
       if (get().role === 'host') {
-        broadcast({ type: 'duel_close' })
-        writeDB({ tiles: get().tiles, cursor: get().cursor })
+        const { tiles } = get()
+        if (!hostCheckGameEnd(tiles)) {
+          broadcast({ type: 'duel_close' })
+          writeDB({ tiles, cursor: get().cursor })
+        }
       }
     },
 
@@ -830,7 +937,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     updateGameSettings: (s) => {
       const next = { ...get().gameSettings, ...s }
       set({ gameSettings: next })
-      broadcast({ type: 'game_settings', duelTime: next.duelTime, categoriesCount: next.categoriesCount })
+      broadcast({ type: 'game_settings', duelTime: next.duelTime, categoriesCount: next.categoriesCount, gameMode: next.gameMode, passPenalty: next.passPenalty })
     },
 
     sendInvite: (targetPlayerId) => {

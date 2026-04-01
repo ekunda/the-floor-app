@@ -428,6 +428,7 @@ export default function MultiplayerGame() {
     if (!duel) return
     const handler = (e: KeyboardEvent) => {
       if (['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
+      SoundEngine.unlockAudio()
       if (!duel.started) {
         if (e.key === 'Enter' && isHost) { e.preventDefault(); startFight() }
         if (e.key === 'Escape') { e.preventDefault(); setExitConfirm(true); return }
@@ -726,7 +727,7 @@ export default function MultiplayerGame() {
                   </div>
                 </div>
                 {isHost && (
-                  <button onClick={startFight} style={{
+                  <button onClick={() => { SoundEngine.unlockAudio(); startFight() }} style={{
                     padding:'14px 40px', background:'rgba(212,175,55,0.15)', border:'1px solid rgba(212,175,55,0.4)',
                     borderRadius:10, color:'#D4AF37', fontFamily:"'Bebas Neue',sans-serif", fontSize:'1.2rem', letterSpacing:5, cursor:'pointer',
                   }}>

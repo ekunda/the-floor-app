@@ -92,6 +92,6 @@ export type MPEvent =
   | { type: 'game_start' }
   | { type: 'game_end' }
   | { type: 'chat_message';  from: string; text: string; ts: number }
-  | { type: 'game_settings'; duelTime: number; categoriesCount: number }
+  | { type: 'game_settings'; duelTime: number; categoriesCount: number; gameMode: string; passPenalty: number }
   | { type: 'opponent_name'; name: string; avatar: string }
   | { type: 'opponent_left' }   // one player left — other should exit to lobby

@@ -12,7 +12,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { SoundEngine } from '../lib/SoundEngine'
 import { useConfigStore } from '../store/useConfigStore'
-import { useMultiplayerStore } from '../store/useMultiplayerStore'
+import { useMultiplayerStore, MP_MODES, MPGameMode } from '../store/useMultiplayerStore'
 import { useAuthStore } from '../store/useAuthStore'
 import { supabase } from '../lib/supabase'
 
@@ -92,6 +92,7 @@ export default function MultiplayerLobby() {
   const [searchQ,       setSearchQ]       = useState('')
   const [invitation,    setInvitation]    = useState<Invitation | null>(null)
   const [invitedIds,    setInvitedIds]    = useState<Set<string>>(new Set())
+  const [inviteDeclineMsg, setInviteDeclineMsg] = useState<string | null>(null)
   const chatEndRef  = useRef<HTMLDivElement>(null)
   const searchQRef  = useRef(searchQ)
 
@@ -129,12 +130,24 @@ export default function MultiplayerLobby() {
     return () => clearTimeout(t)
   }, [searchQ])
 
-  // ── Invite subscription (only when logged in) ──────────────────────────────
+  // ── Invite subscription (receive invites) ─────────────────────────────────
   useEffect(() => {
     if (!user?.id) return
     const ch = supabase.channel(`invites:${user.id}`)
     ch.on('broadcast', { event: 'invite' }, ({ payload }) => {
       setInvitation({ roomCode: payload.roomCode, fromName: payload.fromName, fromId: payload.fromId })
+    }).subscribe()
+    return () => { ch.unsubscribe() }
+  }, [user?.id])
+
+  // ── Invite response subscription (receive declines) ───────────────────────
+  useEffect(() => {
+    if (!user?.id) return
+    const myId = user.id
+    const ch = supabase.channel(`invite_response:${myId}`)
+    ch.on('broadcast', { event: 'decline' }, ({ payload }) => {
+      setInviteDeclineMsg(`${payload.fromName} odrzucił zaproszenie`)
+      setTimeout(() => setInviteDeclineMsg(null), 4000)
     }).subscribe()
     return () => { ch.unsubscribe() }
   }, [user?.id])
@@ -158,6 +171,19 @@ export default function MultiplayerLobby() {
     setInvitation(null)
     setCodeInput(code)
     joinRoom(code)
+  }
+
+  const handleDeclineInvite = () => {
+    if (!invitation) return
+    // Notify sender
+    const respCh = supabase.channel(`invite_response:${invitation.fromId}`)
+    respCh.subscribe((st) => {
+      if (st === 'SUBSCRIBED') {
+        respCh.send({ type: 'broadcast', event: 'decline', payload: { fromName: user?.username ?? playerName } })
+          .then(() => setTimeout(() => respCh.unsubscribe(), 1000))
+      }
+    })
+    setInvitation(null)
   }
 
   const handleLeave = async () => { await leaveRoom(); navigate('/') }
@@ -278,26 +304,66 @@ export default function MultiplayerLobby() {
 
             {/* Settings (host edits, guest views) */}
             <div style={{ marginBottom:14 }}>
-              <div style={{ ...G.label, marginBottom:10 }}>⚙️ USTAWIENIA GRY</div>
+              <div style={{ ...G.label, marginBottom:8 }}>⚙️ TRYB GRY</div>
               {isHost ? (
                 <>
-                  <div style={{ marginBottom:10 }}>
-                    <div style={{ ...G.label, fontSize:'0.58rem' }}>CZAS ODPOWIEDZI</div>
-                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                      {[15,30,45,60].map(t => <SettingBtn key={t} label={`${t}s`} active={gameSettings.duelTime===t} onClick={() => updateGameSettings({duelTime:t})} />)}
-                    </div>
+                  {/* Mode selector */}
+                  <div style={{ display:'flex', gap:6, marginBottom:10 }}>
+                    {(Object.entries(MP_MODES) as [MPGameMode, typeof MP_MODES[MPGameMode]][]).map(([key, mode]) => {
+                      const active = gameSettings.gameMode === key
+                      return (
+                        <button key={key} onClick={() => updateGameSettings({ gameMode: key, duelTime: mode.duelTime, passPenalty: mode.passPenalty, categoriesCount: mode.categoriesCount })}
+                          style={{ flex:1, padding:'8px 4px', borderRadius:9, cursor:'pointer', textAlign:'center', background: active ? 'rgba(212,175,55,0.15)' : 'rgba(255,255,255,0.03)', border:`1px solid ${active ? '#D4AF37' : 'rgba(255,255,255,0.08)'}`, transition:'all 0.15s' }}>
+                          <div style={{ fontSize:'1.2rem', marginBottom:2 }}>{mode.emoji}</div>
+                          <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.72rem', letterSpacing:2, color: active ? '#D4AF37' : 'rgba(255,255,255,0.4)' }}>{mode.label}</div>
+                        </button>
+                      )
+                    })}
                   </div>
-                  <div>
-                    <div style={{ ...G.label, fontSize:'0.58rem' }}>KATEGORII NA PLANSZY</div>
-                    <div style={{ display:'flex', gap:6, flexWrap:'wrap' }}>
-                      {[6,9,12,16].map(n => <SettingBtn key={n} label={`${n}`} active={gameSettings.categoriesCount===n} onClick={() => updateGameSettings({categoriesCount:n})} />)}
-                    </div>
+                  {/* Mode details */}
+                  <div style={{ padding:'9px 12px', background:'rgba(212,175,55,0.04)', border:'1px solid rgba(212,175,55,0.1)', borderRadius:8, fontSize:'0.72rem', color:'rgba(255,255,255,0.45)', display:'flex', gap:12, flexWrap:'wrap' as const }}>
+                    <span>⏱ <strong style={{ color:'#D4AF37' }}>{gameSettings.duelTime}s</strong></span>
+                    <span>⚠️ kara <strong style={{ color:'#fb923c' }}>-{gameSettings.passPenalty}s</strong></span>
+                    <span>📦 <strong style={{ color:'#D4AF37' }}>{gameSettings.categoriesCount}</strong> pól</span>
                   </div>
+                  {/* Custom overrides */}
+                  <details style={{ marginTop:8 }}>
+                    <summary style={{ ...G.label, cursor:'pointer', fontSize:'0.58rem', marginBottom:0, userSelect:'none' as const }}>DOSTOSUJ ▾</summary>
+                    <div style={{ paddingTop:8, display:'flex', flexDirection:'column' as const, gap:8 }}>
+                      <div>
+                        <div style={{ ...G.label, fontSize:'0.55rem' }}>CZAS ODPOWIEDZI</div>
+                        <div style={{ display:'flex', gap:5, flexWrap:'wrap' as const }}>
+                          {[15,30,45,60].map(t => <SettingBtn key={t} label={`${t}s`} active={gameSettings.duelTime===t} onClick={() => updateGameSettings({duelTime:t})} />)}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ ...G.label, fontSize:'0.55rem' }}>KARA ZA PAS</div>
+                        <div style={{ display:'flex', gap:5, flexWrap:'wrap' as const }}>
+                          {[1,2,5,10,15].map(p => <SettingBtn key={p} label={`-${p}s`} active={gameSettings.passPenalty===p} onClick={() => updateGameSettings({passPenalty:p})} />)}
+                        </div>
+                      </div>
+                      <div>
+                        <div style={{ ...G.label, fontSize:'0.55rem' }}>POLA NA PLANSZY</div>
+                        <div style={{ display:'flex', gap:5, flexWrap:'wrap' as const }}>
+                          {[6,9,12,16].map(n => <SettingBtn key={n} label={`${n}`} active={gameSettings.categoriesCount===n} onClick={() => updateGameSettings({categoriesCount:n})} />)}
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 </>
               ) : (
-                <div style={{ padding:'10px 12px', background:'rgba(255,255,255,0.03)', borderRadius:8, fontSize:'0.78rem', color:'rgba(255,255,255,0.4)' }}>
-                  <div style={{ marginBottom:3 }}>⏱ Czas: <span style={{ color:'#D4AF37' }}>{gameSettings.duelTime}s</span></div>
-                  <div>📦 Kategorie: <span style={{ color:'#D4AF37' }}>{gameSettings.categoriesCount}</span></div>
+                <div style={{ padding:'12px 14px', background:'rgba(212,175,55,0.04)', border:'1px solid rgba(212,175,55,0.1)', borderRadius:10 }}>
+                  <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
+                    <span style={{ fontSize:'1.4rem' }}>{MP_MODES[gameSettings.gameMode as MPGameMode]?.emoji ?? '🏛️'}</span>
+                    <span style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'1rem', letterSpacing:3, color:'#D4AF37' }}>
+                      {MP_MODES[gameSettings.gameMode as MPGameMode]?.label ?? gameSettings.gameMode.toUpperCase()}
+                    </span>
+                  </div>
+                  <div style={{ display:'flex', gap:14, fontSize:'0.78rem', color:'rgba(255,255,255,0.5)' }}>
+                    <span>⏱ <strong style={{ color:'#D4AF37' }}>{gameSettings.duelTime}s</strong></span>
+                    <span>⚠️ <strong style={{ color:'#fb923c' }}>-{gameSettings.passPenalty}s</strong> pas</span>
+                    <span>📦 <strong style={{ color:'#D4AF37' }}>{gameSettings.categoriesCount}</strong> pól</span>
+                  </div>
                 </div>
               )}
             </div>
@@ -343,7 +409,7 @@ export default function MultiplayerLobby() {
                 🎯 Host wybiera pole na planszy • Losowanie kto odpowiada pierwszy<br />
                 ⏱ Twój timer liczy się tylko gdy <em>ty</em> odpowiadasz<br />
                 ✓ Poprawna odpowiedź = tura przechodzi do przeciwnika<br />
-                ⏱ PAS = nowe pytanie, kara {gameSettings.duelTime}s → -{(useConfigStore.getState().config.PASS_PENALTY || 5)}s<br />
+                ⏱ PAS = nowe pytanie, kara -{gameSettings.passPenalty}s<br />
                 🏆 Timer = 0 → przegrywasz pole
               </div>
             </div>
@@ -376,10 +442,20 @@ export default function MultiplayerLobby() {
               <button onClick={handleAcceptInvite} style={{ flex:1, padding:'8px 0', borderRadius:8, background:'rgba(74,222,128,0.15)', border:'1px solid rgba(74,222,128,0.4)', color:'#4ade80', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:3, cursor:'pointer', transition:'all 0.15s' }}>
                 ✓ DOŁĄCZ
               </button>
-              <button onClick={() => setInvitation(null)} style={{ padding:'8px 14px', borderRadius:8, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.4)', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', cursor:'pointer' }}>
-                ✕
+              <button onClick={handleDeclineInvite} style={{ padding:'8px 14px', borderRadius:8, background:'rgba(255,255,255,0.04)', border:'1px solid rgba(255,255,255,0.1)', color:'rgba(255,255,255,0.4)', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', cursor:'pointer' }}>
+                ✕ ODRZUĆ
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Invite decline notification ──────────────────────────────────────── */}
+      {inviteDeclineMsg && (
+        <div style={{ position:'fixed', top: invitation ? 160 : 16, left:'50%', transform:'translateX(-50%)', zIndex:999, animation:'slideDown 0.2s ease', maxWidth:360, width:'calc(100% - 32px)' }}>
+          <div style={{ background:'rgba(15,15,15,0.97)', border:'1px solid rgba(239,68,68,0.35)', borderRadius:12, padding:'12px 18px', display:'flex', alignItems:'center', gap:10, boxShadow:'0 4px 24px rgba(0,0,0,0.4)' }}>
+            <span style={{ fontSize:'1.2rem' }}>❌</span>
+            <span style={{ fontSize:'0.8rem', color:'rgba(255,255,255,0.7)', fontFamily:"'Montserrat',sans-serif" }}>{inviteDeclineMsg}</span>
           </div>
         </div>
       )}
