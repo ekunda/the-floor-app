@@ -13,6 +13,15 @@ export const supabase = createClient(URL, ANON, {
     autoRefreshToken: true,
     storageKey: 'thefloor_auth',
   },
+  realtime: {
+    params: { eventsPerSecond: 20 },         // higher throughput for fast game events
+  },
+  db: {
+    schema: 'public',
+  },
+  global: {
+    headers: { 'x-client-info': 'thefloor' },
+  },
 })
 
 // ─────────────────────────────────────────────────────────────

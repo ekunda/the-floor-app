@@ -89,6 +89,8 @@ export default function AdminConfig() {
   const [resetting, setResetting]             = useState(false)
 
   useEffect(() => { SoundEngine.stopBg(0); fetch(); loadCats() }, [])
+  // Re-fetch config + categories when switching modes
+  useEffect(() => { fetch(); if (mode === 'sp') loadCats() }, [mode])
   useEffect(() => {
     const iv = setInterval(() => {
       const r = sessionRemainingMs(); setSessionLeft(r)
@@ -557,9 +559,9 @@ function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatE
       )}
       <div style={{padding:18,background:'rgba(255,255,255,0.02)',border:'1px solid rgba(255,255,255,0.07)',borderRadius:12}}>
         <div style={{fontFamily:"'Bebas Neue',sans-serif",fontSize:'0.9rem',letterSpacing:3,color:'rgba(255,255,255,0.5)',marginBottom:12}}>MASOWE WGRYWANIE</div>
-        <select value={bulkCatId} onChange={e=>setBulkCatId(e.target.value)} style={{...inp,marginBottom:10}}>
-          <option value=''>Wybierz kategorie...</option>
-          {cats.map((c: any) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+        <select value={bulkCatId} onChange={e=>setBulkCatId(e.target.value)} style={{...inp,marginBottom:10,appearance:'none' as any,WebkitAppearance:'none' as any,backgroundImage:'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'12\' height=\'12\' fill=\'%23999\' viewBox=\'0 0 16 16\'%3E%3Cpath d=\'M8 11L3 6h10z\'/%3E%3C/svg%3E")',backgroundRepeat:'no-repeat',backgroundPosition:'right 12px center',paddingRight:32}}>
+          <option value='' style={{background:'#181818',color:'#aaa'}}>Wybierz kategorie...</option>
+          {cats.map((c: any) => <option key={c.id} value={c.id} style={{background:'#181818',color:'#fff'}}>{c.emoji} {c.name}</option>)}
         </select>
         <input ref={bulkRef} type='file' accept='image/*' multiple style={{display:'none'}} onChange={e=>setBulkFiles(Array.from((e.target as any).files||[]))} />
         <div style={{display:'flex',gap:8,flexWrap:'wrap' as const,alignItems:'center'}}>
@@ -596,7 +598,9 @@ function ActiveRoomsSection() {
     setLoading(false)
   }
 
+  // Reload every time the component mounts (tab switch re-mounts)
   useEffect(() => { loadRooms() }, [])
+  // Also add a key on the parent to force re-mount — see usage
 
   const nick = (id: string | null) => id ? (profiles[id] ?? id.slice(0,8)) : '—'
   const statusColor = (s: string) => s === 'playing' ? '#4ade80' : s === 'waiting' ? '#facc15' : 'rgba(255,255,255,0.3)'
@@ -638,10 +642,10 @@ function ActiveRoomsSection() {
 }
 
 function GameHistorySection({history, loading, onLoad}: any) {
-  const [loaded,   setLoaded]   = useState(false)
   const [profiles, setProfiles] = useState<Record<string,string>>({})
 
-  useEffect(() => { if (!loaded) { onLoad(); setLoaded(true) } }, [])
+  // Reload each time component mounts (tab switch re-mounts via key)
+  useEffect(() => { onLoad() }, [])
 
   // Pobierz nicknamy dla wszystkich unikalnych ID z historii
   useEffect(() => {

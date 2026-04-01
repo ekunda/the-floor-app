@@ -204,14 +204,12 @@ function StatsBar({ tiles, hostName, guestName }: { tiles: Tile[]; hostName: str
   )
 }
 
-// ── Player panel in duel ──────────────────────────────────────────────────────
+// ── Player panel in duel (read-only — no buttons) ───────────────────────────
 function PlayerPanel({
   name, timer, active, color, borderSide, isYou,
-  onCorrect,
 }: {
   name: string; timer: number; active: boolean; color: string;
   borderSide: 'left' | 'right'; isYou: boolean;
-  onCorrect: () => void;
 }) {
   const timerColor = timer <= 5 ? '#ef4444' : timer <= 15 ? '#facc15' : '#ffffff'
   const timerGlow  = timer <= 5
@@ -242,23 +240,6 @@ function PlayerPanel({
       }}>
         {timer}
       </div>
-      {active && isYou && (
-        <button
-          onClick={onCorrect}
-          style={{
-            padding: '10px 20px',
-            background: `${color}22`,
-            border: `1px solid ${color}66`,
-            borderRadius: 8,
-            color,
-            fontFamily:"'Bebas Neue',sans-serif",
-            fontSize:'1rem', letterSpacing:3,
-            cursor:'pointer',
-          }}
-        >
-          ✓ POPRAWNIE
-        </button>
-      )}
     </div>
   )
 }
@@ -266,12 +247,10 @@ function PlayerPanel({
 // ── Winner overlay ────────────────────────────────────────────────────────────
 function WinnerOverlay({
   winner, hostName, guestName, hostScore, guestScore,
-  onClose,
 }: {
   winner: 'host'|'guest'|'draw'
   hostName: string; guestName: string
   hostScore: number; guestScore: number
-  onClose: () => void
 }) {
   const name = winner === 'draw' ? 'REMIS!' : winner === 'host' ? hostName : guestName
   const color = winner === 'host' ? '#FFD700' : winner === 'guest' ? '#C0C0C0' : '#a78bfa'
@@ -289,17 +268,11 @@ function WinnerOverlay({
         <div style={{ color:'rgba(255,255,255,0.35)', fontSize:'0.75rem', letterSpacing:2, margin:'8px 0 20px' }}>
           {winner==='draw' ? 'Pole zostaje niezmienione' : 'Zdobywa pole!'}
         </div>
-        <div style={{ display:'flex', gap:20, justifyContent:'center', marginBottom:24 }}>
+        <div style={{ display:'flex', gap:20, justifyContent:'center' }}>
           <div style={{ color:'#FFD700', fontFamily:"'Bebas Neue',sans-serif", letterSpacing:3 }}>{hostName}: {hostScore}</div>
           <div style={{ color:'rgba(255,255,255,0.3)' }}>|</div>
           <div style={{ color:'#C0C0C0', fontFamily:"'Bebas Neue',sans-serif", letterSpacing:3 }}>{guestName}: {guestScore}</div>
         </div>
-        <button onClick={onClose} style={{
-          padding:'10px 28px', background:`${color}22`, border:`1px solid ${color}55`,
-          borderRadius:8, color, fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:3, cursor:'pointer',
-        }}>
-          POWRÓT DO PLANSZY
-        </button>
       </div>
     </div>
   )
@@ -381,12 +354,16 @@ export default function MultiplayerGame() {
     }
   }, [!!duel?.started])
 
-  // Countdown beeps (3, 2, 1 = timerBeep; START = play countdown sound)
+  // Countdown beeps — dedup guard prevents double-play
+  const lastBeepRef = useRef<string | null>(null)
   useEffect(() => {
-    if (countdown === '3')     SoundEngine.timerBeep(3)
-    else if (countdown === '2') SoundEngine.timerBeep(2)
-    else if (countdown === '1') SoundEngine.timerBeep(1)
+    if (!countdown || countdown === lastBeepRef.current) return
+    lastBeepRef.current = countdown
+    if (countdown === '3')          SoundEngine.timerBeep(3)
+    else if (countdown === '2')     SoundEngine.timerBeep(2)
+    else if (countdown === '1')     SoundEngine.timerBeep(1)
     else if (countdown === 'START!') SoundEngine.play('countdown', 0.85)
+    return () => { if (!countdown) lastBeepRef.current = null }
   }, [countdown])
 
   // SFX on feedback (correct / pass / timeout)
@@ -404,11 +381,13 @@ export default function MultiplayerGame() {
     if (winner) SoundEngine.play('applause', 0.8)
   }, [winner])
 
-  // Keyboard controls
+  // Keyboard: board navigation (host only, no duel) + ESC to exit
   useEffect(() => {
-    if (duel) return
     const handler = (e: KeyboardEvent) => {
       if (['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
+      SoundEngine.unlockAudio()
+      if (e.key === 'Escape') { e.preventDefault(); setExitConfirm(true); return }
+      if (duel) return  // during duel: no manual controls (voice-only)
       if (!isHost) return
       switch (e.key) {
         case 'ArrowUp':    e.preventDefault(); moveCursor('up');    break
@@ -422,46 +401,19 @@ export default function MultiplayerGame() {
     return () => window.removeEventListener('keydown', handler)
   }, [duel, isHost, moveCursor, startChallenge])
 
-  // Duel keyboard controls
+  // Auto-start fight when duel opens (no manual "ROZPOCZNIJ WALKĘ" needed)
   useEffect(() => {
-    if (!duel) return
-    const handler = (e: KeyboardEvent) => {
-      if (['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) return
-      SoundEngine.unlockAudio()
-      if (!duel.started) {
-        if (e.key === 'Enter' && isHost) { e.preventDefault(); startFight() }
-        if (e.key === 'Escape') { e.preventDefault(); setExitConfirm(true); return }
-        return
-      }
-      switch (e.key) {
-        case ' ':
-        case 'Enter':
-          e.preventDefault()
-          if (iAmActive) markCorrect()
-          break
-        case 'p': case 'P':
-          e.preventDefault()
-          if (iAmActive) pass()
-          break
-        case 'm': case 'M':
-          if (speechSupported) setSpeechEnabled(s => !s)
-          break
-        case 'Escape':
-          e.preventDefault()
-          setExitConfirm(true)
-          break
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [duel, iAmActive, isHost, markCorrect, pass, startFight, speechSupported])
+    if (!duel || duel.started || !isHost) return
+    const t = setTimeout(() => { SoundEngine.unlockAudio(); startFight() }, 600)
+    return () => clearTimeout(t)
+  }, [duel, isHost, startFight])
 
-  // Auto-close winner after WIN_CLOSE_MS
+  // Auto-close winner after WIN_CLOSE_MS — HOST only (guest receives duel_close broadcast)
   useEffect(() => {
-    if (!winner) return
+    if (!winner || !isHost) return
     const t = setTimeout(() => closeDuel(), config.WIN_CLOSE_MS)
     return () => clearTimeout(t)
-  }, [winner, config.WIN_CLOSE_MS, closeDuel])
+  }, [winner, isHost, config.WIN_CLOSE_MS, closeDuel])
 
   // ── Speech recognition ─────────────────────────────────────────────────────
   // Voice only acts when: duel started, NOT blocked, NOT countdown, IS your turn
@@ -704,11 +656,8 @@ export default function MultiplayerGame() {
 
             {/* Duel body */}
             {!duel.started ? (
-              /* Pre-fight screen */
+              /* Pre-fight: auto-starts via useEffect, show brief VS screen */
               <div style={{ flex:1, display:'flex', flexDirection:'column', alignItems:'center', justifyContent:'center', gap:24, padding:32 }}>
-                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'1.2rem', letterSpacing:4, color:'rgba(255,255,255,0.4)' }}>
-                  {isHost ? 'NACIŚNIJ ENTER ABY ROZPOCZĄĆ' : 'OCZEKIWANIE NA HOSTA…'}
-                </div>
                 <div style={{ display:'flex', gap:20, alignItems:'center' }}>
                   <div style={{ textAlign:'center' }}>
                     <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'1rem', letterSpacing:4, color:'#FFD700', marginBottom:4 }}>{hostName}</div>
@@ -720,14 +669,7 @@ export default function MultiplayerGame() {
                     <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'3rem', color:'#fff' }}>{duel.timerGuest}s</div>
                   </div>
                 </div>
-                {isHost && (
-                  <button onClick={() => { SoundEngine.unlockAudio(); startFight() }} style={{
-                    padding:'14px 40px', background:'rgba(212,175,55,0.15)', border:'1px solid rgba(212,175,55,0.4)',
-                    borderRadius:10, color:'#D4AF37', fontFamily:"'Bebas Neue',sans-serif", fontSize:'1.2rem', letterSpacing:5, cursor:'pointer',
-                  }}>
-                    ▶ ROZPOCZNIJ WALKĘ
-                  </button>
-                )}
+                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'1rem', letterSpacing:4, color:'rgba(255,255,255,0.3)' }}>PRZYGOTUJ SIĘ…</div>
               </div>
             ) : (
               /* Fight screen */
@@ -740,7 +682,6 @@ export default function MultiplayerGame() {
                   color={isHost ? '#FFD700' : '#C0C0C0'}
                   borderSide="right"
                   isYou
-                  onCorrect={markCorrect}
                 />
 
                 {/* Center: question + feedback */}
@@ -776,11 +717,15 @@ export default function MultiplayerGame() {
                     </div>
                   )}
 
-                  {/* Controls hint */}
+                  {/* Controls hint — voice-only, no manual buttons */}
                   <div style={{ display:'flex', alignItems:'center', gap:8, color:'rgba(255,255,255,0.2)', fontSize:'0.68rem', letterSpacing:1, flexWrap:'wrap' as const, justifyContent:'center' }}>
-                    {iAmActive && <><span><kbd style={{ display:'inline-block', padding:'1px 6px', background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:4, fontFamily:'monospace', fontSize:'0.85em' }}>SPACJA</kbd> / klawisz ✓ poprawnie</span><span>·</span><span><kbd style={{ display:'inline-block', padding:'1px 6px', background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:4, fontFamily:'monospace', fontSize:'0.85em' }}>P</kbd> pas</span><span>·</span></>}
-                    {speechSupported && <><span style={{ color: speechEnabled ? 'rgba(129,140,248,0.6)' : undefined }}><kbd style={{ display:'inline-block', padding:'1px 6px', background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:4, fontFamily:'monospace', fontSize:'0.85em' }}>M</kbd> mikrofon {speechEnabled?'wł.':'wył.'}</span><span>·</span></>}
-                    <span><kbd style={{ display:'inline-block', padding:'1px 6px', background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:4, fontFamily:'monospace', fontSize:'0.85em' }}>ESC</kbd> zakończ</span>
+                    {speechSupported && (
+                      <span style={{ color: speechEnabled ? 'rgba(129,140,248,0.6)' : undefined }}>
+                        🎤 Rozpoznawanie mowy {speechEnabled ? 'wł.' : 'wył.'}
+                      </span>
+                    )}
+                    <span>·</span>
+                    <span><kbd style={{ display:'inline-block', padding:'1px 6px', background:'rgba(255,255,255,0.08)', border:'1px solid rgba(255,255,255,0.15)', borderRadius:4, fontFamily:'monospace', fontSize:'0.85em' }}>ESC</kbd> opuść</span>
                   </div>
 
                   {speechError && (
@@ -798,7 +743,6 @@ export default function MultiplayerGame() {
                   color={isHost ? '#C0C0C0' : '#FFD700'}
                   borderSide="left"
                   isYou={false}
-                  onCorrect={() => {}}
                 />
               </div>
             )}
@@ -816,7 +760,7 @@ export default function MultiplayerGame() {
               </div>
             )}
 
-            {/* Winner overlay */}
+            {/* Winner overlay — auto-closes via host closeDuel timer */}
             {winner && (
               <WinnerOverlay
                 winner={winner}
@@ -824,7 +768,6 @@ export default function MultiplayerGame() {
                 guestName={guestName}
                 hostScore={hostScore}
                 guestScore={guestScore}
-                onClose={closeDuel}
               />
             )}
           </div>
