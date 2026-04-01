@@ -66,7 +66,10 @@ async function loadProfile(userId: string): Promise<UserProfile | null> {
 }
 
 async function upsertProfile(profile: Partial<UserProfile> & { id: string }): Promise<void> {
-  await supabase.from('profiles').upsert(profile, { ignoreDuplicates: false })
+  // Strip fields that don't exist in the profiles table (e.g. email)
+  const { email: _email, ...profileData } = profile as any
+  const { error } = await supabase.from('profiles').upsert(profileData, { ignoreDuplicates: false })
+  if (error) console.warn('[Auth] upsertProfile error:', error)
 }
 
 export const useAuthStore = create<AuthStore>((set, get) => ({
@@ -80,11 +83,23 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (session?.user) {
-        const profile = await loadProfile(session.user.id)
-        set({ session, user: profile })
-        if (profile) {
-          await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
+        let profile = await loadProfile(session.user.id)
+        if (!profile) {
+          const meta = session.user.user_metadata ?? {}
+          const rawName = meta.username ?? session.user.email?.split('@')[0] ?? 'GRACZ'
+          const username = String(rawName).toUpperCase().slice(0, 20)
+          profile = {
+            id: session.user.id,
+            username,
+            avatar: AVATARS[Math.floor(Math.random() * AVATARS.length)],
+            xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0,
+            status: 'online',
+            last_username_change: new Date().toISOString(),
+          }
+          await upsertProfile(profile)
         }
+        set({ session, user: profile })
+        await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
       }
     } catch (e) {
       console.warn('[Auth] init error', e)
@@ -130,11 +145,24 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     // Listen for auth changes
     supabase.auth.onAuthStateChange(async (event, session) => {
       if (event === 'SIGNED_IN' && session?.user) {
-        const profile = await loadProfile(session.user.id)
-        set({ session, user: profile })
-        if (profile) {
-          await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
+        let profile = await loadProfile(session.user.id)
+        if (!profile) {
+          // Profile missing — create it now (e.g. after email confirmation)
+          const meta = session.user.user_metadata ?? {}
+          const rawName = meta.username ?? session.user.email?.split('@')[0] ?? 'GRACZ'
+          const username = String(rawName).toUpperCase().slice(0, 20)
+          profile = {
+            id: session.user.id,
+            username,
+            avatar: AVATARS[Math.floor(Math.random() * AVATARS.length)],
+            xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0,
+            status: 'online',
+            last_username_change: new Date().toISOString(),
+          }
+          await upsertProfile(profile)
         }
+        set({ session, user: profile })
+        await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
       } else if (event === 'SIGNED_OUT') {
         set({ session: null, user: null })
       }
@@ -150,22 +178,31 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
 
     try {
-      const { data, error } = await supabase.auth.signUp({ email, password })
+      // Store username in auth metadata so it's available after email confirmation
+      const { data, error } = await supabase.auth.signUp({
+        email, password,
+        options: { data: { username: trimmed } },
+      })
       if (error) { set({ error: error.message }); return false }
       if (!data.user) { set({ error: 'Błąd rejestracji' }); return false }
 
-      // Create profile
       const profile: UserProfile = {
         id: data.user.id,
-        email,
         username: trimmed,
         avatar: AVATARS[Math.floor(Math.random() * AVATARS.length)],
         xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0,
         status: 'online',
         last_username_change: new Date().toISOString(),
       }
-      await upsertProfile(profile)
-      set({ user: profile })
+
+      if (data.session) {
+        // Email confirmation disabled — session is active, create profile now
+        await upsertProfile(profile)
+        set({ session: data.session, user: profile })
+      }
+      // If no session, email confirmation required.
+      // Profile will be created in onAuthStateChange SIGNED_IN handler.
+
       return true
     } catch (e: any) {
       set({ error: e.message ?? 'Nieznany błąd' })
