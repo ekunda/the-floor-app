@@ -161,19 +161,28 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     return { questionId: q?.id ?? '', usedIds: used }
   }
 
+  // MP board presets keyed by categoriesCount — each tile = one category slot
+  const MP_BOARD: Record<number, { cols: number; rows: number }> = {
+    6:  { cols: 3, rows: 2 },
+    9:  { cols: 3, rows: 3 },
+    12: { cols: 4, rows: 3 },
+    16: { cols: 4, rows: 4 },
+  }
+
   function buildTiles(cats: (Category & { questions: Question[] })[], categoriesCount?: number) {
-    const cfg    = useConfigStore.getState().config
-    const preset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const { cols, rows } = preset
-    // Ogranicz liczbę kategorii zgodnie z ustawieniami lobby
-    const limited = categoriesCount && categoriesCount < cats.length
-      ? shuffle(cats).slice(0, categoriesCount)
-      : cats
-    const pool   = shuffle(limited)
+    // In MP: categoriesCount drives both grid size AND how many distinct categories appear
+    const mpPreset = categoriesCount ? MP_BOARD[categoriesCount] : undefined
+    const cfg      = useConfigStore.getState().config
+    const spPreset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
+    const { cols, rows } = mpPreset ?? spPreset
+
+    const count   = categoriesCount ?? (cols * rows)
+    const limited = count < cats.length ? shuffle(cats).slice(0, count) : shuffle(cats)
+    // One tile per category slot; wrap if fewer categories than tiles
     const tiles: Tile[] = Array.from({ length: cols * rows }, (_, i) => {
-      const cat  = pool[i % Math.max(pool.length, 1)]
-      const x    = i % cols
-      const y    = Math.floor(i / cols)
+      const cat   = limited[i % Math.max(limited.length, 1)]
+      const x     = i % cols
+      const y     = Math.floor(i / cols)
       const owner: TileOwner = x < Math.ceil(cols / 2) ? 'gold' : 'silver'
       return { x, y, categoryId: cat?.id ?? '', categoryName: cat?.name ?? 'Kategoria', owner }
     })
