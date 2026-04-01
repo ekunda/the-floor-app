@@ -364,25 +364,45 @@ export default function MultiplayerGame() {
     if (status === 'finished') navigate('/multiplayer')
   }, [status, navigate])
 
-  // Music: board music unless duel active
+  // Init SoundEngine volumes from config on mount
   useEffect(() => {
+    SoundEngine.init(config.MUSIC_VOLUME, config.SFX_VOLUME)
     SoundEngine.startBg('bgMusic', 0.25)
     return () => SoundEngine.stopBg(300)
   }, [])
 
+  // Music: board music <-> duel music
   useEffect(() => {
     if (duel?.started && !winner) {
       SoundEngine.stopBg(200)
-      setTimeout(() => SoundEngine.startBg('duelMusic', volumeFactor(0.22)), 250)
+      setTimeout(() => SoundEngine.startBg('duelMusic', 0.22), 250)
     } else if (!duel) {
       SoundEngine.stopBg(300)
-      setTimeout(() => SoundEngine.startBg('bgMusic', volumeFactor(0.25)), 350)
+      setTimeout(() => SoundEngine.startBg('bgMusic', 0.25), 350)
     }
   }, [!!duel?.started])
 
+  // Countdown beeps (3, 2, 1 = timerBeep; START = play countdown sound)
+  useEffect(() => {
+    if (countdown === '3')     SoundEngine.timerBeep(3)
+    else if (countdown === '2') SoundEngine.timerBeep(2)
+    else if (countdown === '1') SoundEngine.timerBeep(1)
+    else if (countdown === 'START!') SoundEngine.play('countdown', 0.85)
+  }, [countdown])
+
+  // SFX on feedback (correct / pass / timeout)
+  useEffect(() => {
+    if (!feedback.text) return
+    if (feedback.type === 'correct' || feedback.type === 'voice') {
+      SoundEngine.play('correct', 0.9)
+    } else if (feedback.type === 'pass' || feedback.type === 'timeout') {
+      SoundEngine.play('buzzer', 0.7)
+    }
+  }, [feedback.text])
+
   // Winner sound
   useEffect(() => {
-    if (winner) SoundEngine.play('applause', volumeFactor(0.8))
+    if (winner) SoundEngine.play('applause', 0.8)
   }, [winner])
 
   // Keyboard controls
@@ -744,8 +764,8 @@ export default function MultiplayerGame() {
                     {feedback.text || (iAmActive ? '🎤 TWOJA KOLEJ' : '⏳ KOLEJ PRZECIWNIKA')}
                   </div>
 
-                  {/* Question image */}
-                  {imageUrl && (
+                  {/* Question image — hidden during countdown (revealed after START!) */}
+                  {imageUrl && !countdown && (
                     <div style={{ flex:1, display:'flex', alignItems:'center', justifyContent:'center', minHeight:0, width:'100%' }}>
                       <img
                         src={imageUrl}

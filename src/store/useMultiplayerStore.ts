@@ -23,6 +23,11 @@ import { useAuthStore } from './useAuthStore'
 // ── Module-level timer (only host runs it) ─────────────────────────────────────
 let tickerInterval: ReturnType<typeof setInterval> | null = null
 
+// ── Categories cache (avoid re-fetching on every room create/join) ────────────
+let _catsCache: (Category & { questions: Question[] })[] | null = null
+let _catsCachedAt = 0
+const CATS_CACHE_TTL = 5 * 60 * 1000  // 5 minutes
+
 function stopTicker() {
   if (tickerInterval) { clearInterval(tickerInterval); tickerInterval = null }
 }
@@ -542,6 +547,11 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     setPlayerName: (name) => { setLocalPlayerName(name); set({ playerName: name }) },
 
     loadCategories: async () => {
+      // Return cached data if fresh (avoids re-fetching on every room create/join)
+      if (_catsCache && Date.now() - _catsCachedAt < CATS_CACHE_TTL) {
+        set({ categories: _catsCache })
+        return
+      }
       const { data } = await supabase
         .from('categories')
         .select('id,name,emoji,lang,created_at,questions(id,category_id,image_path,answer,synonyms,created_at)')
@@ -552,6 +562,8 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
           ...q, synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
         })),
       })) as (Category & { questions: Question[] })[]
+      _catsCache    = cats
+      _catsCachedAt = Date.now()
       set({ categories: cats })
     },
 

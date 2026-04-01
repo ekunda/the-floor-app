@@ -218,12 +218,45 @@ export default function MultiplayerLobby() {
               ))}
             </div>
 
-            {/* Waiting indicator or START button */}
+            {/* Waiting indicator + invite players */}
             {status === 'waiting' && (
-              <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'rgba(255,255,255,0.03)', borderRadius:8, marginBottom:14 }}>
-                <div style={{ display:'flex', gap:4 }}>{[0,1,2].map(i => <div key={i} style={{ width:6, height:6, borderRadius:'50%', background:'#D4AF37', animation:`wp 1.2s ease-in-out ${i*0.2}s infinite` }} />)}</div>
-                <span style={{ fontSize:'0.75rem', color:'rgba(255,255,255,0.35)', letterSpacing:1 }}>Oczekiwanie na gracza…</span>
-              </div>
+              <>
+                <div style={{ display:'flex', alignItems:'center', gap:10, padding:'9px 12px', background:'rgba(255,255,255,0.03)', borderRadius:8, marginBottom:10 }}>
+                  <div style={{ display:'flex', gap:4 }}>{[0,1,2].map(i => <div key={i} style={{ width:6, height:6, borderRadius:'50%', background:'#D4AF37', animation:`wp 1.2s ease-in-out ${i*0.2}s infinite` }} />)}</div>
+                  <span style={{ fontSize:'0.75rem', color:'rgba(255,255,255,0.35)', letterSpacing:1 }}>Oczekiwanie na gracza…</span>
+                </div>
+
+                {/* Invite online players */}
+                <div style={{ marginBottom:14 }}>
+                  <div style={{ ...G.label, marginBottom:6 }}>✉ ZAPROŚ GRACZA</div>
+                  <input
+                    style={{ ...G.inp, marginBottom:7, fontSize:'0.8rem', padding:'7px 10px' }}
+                    value={searchQ} placeholder="Szukaj po nicku…"
+                    onChange={e => setSearchQ(e.target.value)}
+                  />
+                  <div style={{ maxHeight:160, overflowY:'auto', display:'flex', flexDirection:'column', gap:5 }}>
+                    {onlinePlayers.filter(p => p.id !== user?.id && p.status !== 'in_game').length === 0 && (
+                      <div style={{ padding:'10px 0', textAlign:'center', color:'rgba(255,255,255,0.18)', fontSize:'0.75rem' }}>Brak graczy online</div>
+                    )}
+                    {onlinePlayers.filter(p => p.id !== user?.id && p.status !== 'in_game').map(p => {
+                      const sent = invitedIds.has(p.id)
+                      return (
+                        <div key={p.id} style={{ display:'flex', alignItems:'center', gap:8, padding:'7px 10px', background:'rgba(255,255,255,0.03)', borderRadius:8, border:'1px solid rgba(255,255,255,0.05)' }}>
+                          <span style={{ fontSize:'1rem', flexShrink:0 }}>{p.avatar}</span>
+                          <span style={{ flex:1, fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.82rem', letterSpacing:2, color:'#D4AF37', overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>{p.username}</span>
+                          <button
+                            onClick={() => handleInvite(p.id)}
+                            disabled={sent}
+                            style={{ padding:'3px 9px', borderRadius:6, fontSize:'0.68rem', letterSpacing:1, fontFamily:"'Bebas Neue',sans-serif", cursor: sent ? 'default' : 'pointer', background: sent ? 'rgba(74,222,128,0.08)' : 'rgba(212,175,55,0.1)', border:`1px solid ${sent ? 'rgba(74,222,128,0.25)' : 'rgba(212,175,55,0.25)'}`, color: sent ? '#4ade80' : 'rgba(212,175,55,0.8)', transition:'all 0.15s', flexShrink:0 }}
+                          >
+                            {sent ? '✓' : '✉'}
+                          </button>
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+              </>
             )}
 
             {status === 'lobby' && !isHost && (
