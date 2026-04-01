@@ -113,6 +113,7 @@ export interface MPStore {
   winner:         MPActivePlayer | 'draw' | null
   countdown:      string | null
   error:          string | null
+  gameResult:     { winnerRole: MPActivePlayer | 'draw' | null; myXpDelta: number; isForfeit: boolean; hostTiles: number; guestTiles: number } | null
   toastText:      string
   channel:        ReturnType<typeof supabase.channel> | null
   chatMessages:   { from: string; text: string; ts: number }[]
@@ -274,15 +275,25 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const hostId  = effectivePlayerId()
     const guestId = opponentId ?? ''
 
+    const cc = gameSettings.categoriesCount
+    const xpWin  = cc
+    const xpLoss = 0
+    const xpDraw = Math.floor(cc / 2)
+    const hostXpDelta  = winnerRole === 'host' ? xpWin  : winnerRole === 'guest' ? xpLoss : xpDraw
+    const guestXpDelta = winnerRole === 'guest' ? xpWin : winnerRole === 'host'  ? xpLoss : xpDraw
+
     stopTicker()
     set({ duel: null, currentQuestion: null, winner: winnerRole === 'draw' ? 'draw' : winnerRole, countdown: null, blockInput: false })
     broadcast({ type: 'round_end', winner: winnerRole, tileIdx: -1, hostScore: gold, guestScore: silver })
 
     setTimeout(async () => {
-      broadcast({ type: 'game_end' })
-      set({ status: 'finished' })
+      broadcast({ type: 'game_end', winner: winnerRole, hostXpDelta, guestXpDelta, hostTiles: gold, guestTiles: silver })
+      set({
+        status: 'finished',
+        gameResult: { winnerRole, myXpDelta: hostXpDelta, isForfeit: false, hostTiles: gold, guestTiles: silver },
+      })
       await writeDB({ status: 'finished' })
-      if (hostId && guestId) await awardXP(hostId, guestId, winnerRole, gameSettings.categoriesCount)
+      if (hostId && guestId) await awardXP(hostId, guestId, winnerRole, cc)
     }, 3000)
 
     return true
@@ -544,9 +555,17 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         break
 
       // ── Meta events ──────────────────────────────────────────────────────────
-      case 'game_end':
-        set({ status: 'finished' })
+      case 'game_end': {
+        const { tiles, role } = get()
+        const hostTiles  = ev.hostTiles  ?? tiles.filter(t => t.owner === 'gold').length
+        const guestTiles = ev.guestTiles ?? tiles.filter(t => t.owner === 'silver').length
+        const myXpDelta  = role === 'host' ? ev.hostXpDelta : ev.guestXpDelta
+        set({
+          status: 'finished',
+          gameResult: { winnerRole: ev.winner, myXpDelta, isForfeit: false, hostTiles, guestTiles },
+        })
         break
+      }
 
       case 'chat_message':
         set(s => ({ chatMessages: [...s.chatMessages.slice(-99), { from: ev.from, text: ev.text, ts: ev.ts }] }))
@@ -561,21 +580,27 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         break
 
       case 'opponent_left': {
-        // Przeciwnik opuścił pokój — wróć do lobby z komunikatem
         stopTicker()
         get().showToast('🚪 Przeciwnik opuścił pokój')
-        // Forfeit XP: opponent left, current player (guest) wins
-        const { status: curStatus, opponentId, gameSettings: gsCur, role: curRole } = get()
+        const { status: curStatus, opponentId, gameSettings: gsCur, role: curRole, tiles: curTiles } = get()
+        const forfeitXpWin = Math.round(gsCur.categoriesCount * 1.5)
         if (curStatus === 'playing' && curRole === 'guest' && opponentId) {
           const myId    = effectivePlayerId()
           const theirId = opponentId
-          // Guest won by forfeit — award XP (guest = winner, opponent = host who left)
           awardXP(theirId, myId, 'guest', gsCur.categoriesCount, true).catch(() => {})
         }
+        const hostTiles  = curTiles.filter(t => t.owner === 'gold').length
+        const guestTiles = curTiles.filter(t => t.owner === 'silver').length
         set({
           status: 'finished',
           duel: null, currentQuestion: null, winner: null,
           countdown: null, blockInput: false, feedback: { text:'', type:'' },
+          gameResult: {
+            winnerRole: curRole === 'guest' ? 'guest' : 'host',
+            myXpDelta: forfeitXpWin,
+            isForfeit: true,
+            hostTiles, guestTiles,
+          },
         })
         break
       }
@@ -649,6 +674,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     chatMessages:   [],
     gameSettings:   { duelTime: 45, categoriesCount: 12, gameMode: 'classic', passPenalty: 2 },
     guestReady:     false,
+    gameResult:     null,
 
     setPlayerName: (name) => { setLocalPlayerName(name); set({ playerName: name }) },
 
@@ -805,6 +831,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         tiles: [], cursor: 0, duel: null, currentQuestion: null, winner: null,
         countdown: null, hostScore: 0, guestScore: 0, channel: null, error: null,
         blockInput: false, feedback: { text:'', type:'' }, chatMessages: [], guestReady: false,
+        gameResult: null,
       })
     },
 

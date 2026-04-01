@@ -315,7 +315,7 @@ export default function MultiplayerGame() {
     role, status, playerName, opponentName, opponentAvatar,
     tiles, cursor, gridCols, gridRows, categories,
     duel, currentQuestion, blockInput, feedback,
-    winner, countdown, toastText, hostScore, guestScore,
+    winner, countdown, toastText, hostScore, guestScore, gameResult,
     moveCursor, startChallenge, startFight, markCorrect, pass, closeDuel, leaveRoom,
     showToast, showFeedback,
   } = useMultiplayerStore()
@@ -358,10 +358,9 @@ export default function MultiplayerGame() {
     if (pasDebounceRef.current) { clearTimeout(pasDebounceRef.current); pasDebounceRef.current = null }
   }, [currentQuestion?.id])
 
-  // Validate room access
+  // Validate room access — 'finished' is handled by GameOverScreen, not auto-navigate
   useEffect(() => {
     if (status === 'idle' || status === 'lobby' || status === 'waiting') navigate('/multiplayer')
-    if (status === 'finished') navigate('/multiplayer')
   }, [status, navigate])
 
   // Init SoundEngine volumes from config on mount
@@ -634,7 +633,7 @@ export default function MultiplayerGame() {
       )}
 
       {/* ── Board ── */}
-      <main style={{ flex:1, overflow:'hidden', padding:'16px 20px', position:'relative' }}>
+      <main style={{ flex:1, overflow:'hidden', padding:'12px 20px 4px', position:'relative' }}>
         {tiles.length > 0 ? (
           <MPBoard
             tiles={tiles}
@@ -652,19 +651,14 @@ export default function MultiplayerGame() {
             Ładowanie planszy…
           </div>
         )}
-
-        {/* Hint for host */}
-        {!duel && isHost && (
-          <div style={{ position:'absolute', bottom:24, left:0, right:0, textAlign:'center', color:'rgba(255,255,255,0.2)', fontSize:'0.72rem', letterSpacing:2 }}>
-            ↑↓←→ NAWIGUJ · ENTER ROZPOCZNIJ WALKĘ
-          </div>
-        )}
-        {!duel && isGuest && (
-          <div style={{ position:'absolute', bottom:24, left:0, right:0, textAlign:'center', color:'rgba(255,255,255,0.2)', fontSize:'0.72rem', letterSpacing:2 }}>
-            OCZEKIWANIE NA RUCH PRZECIWNIKA…
-          </div>
-        )}
       </main>
+
+      {/* ── Board hint (below board, not overlapping it) ── */}
+      {!duel && (
+        <div style={{ textAlign:'center', padding:'6px 0 10px', flexShrink:0, color:'rgba(255,255,255,0.18)', fontSize:'0.7rem', letterSpacing:2 }}>
+          {isHost ? '↑↓←→ NAWIGUJ · ENTER ROZPOCZNIJ WALKĘ' : 'OCZEKIWANIE NA RUCH PRZECIWNIKA…'}
+        </div>
+      )}
 
       {/* ── Toast ── */}
       {toastText && (
@@ -852,6 +846,86 @@ export default function MultiplayerGame() {
                 WYJDŹ
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Game Over Screen ── */}
+      {status === 'finished' && gameResult && (
+        <div style={{ position:'fixed', inset:0, zIndex:300, display:'flex', alignItems:'center', justifyContent:'center', background:'rgba(0,0,0,0.92)', backdropFilter:'blur(12px)' }}>
+          <div style={{
+            background:'linear-gradient(160deg,#111 0%,#0a0a0a 100%)',
+            border:'1px solid rgba(212,175,55,0.3)', borderRadius:18,
+            padding:'36px 44px', textAlign:'center', maxWidth:460, width:'calc(100% - 40px)',
+            boxShadow:'0 0 80px rgba(212,175,55,0.1)',
+            animation:'winnerReveal 0.4s ease-out',
+          }}>
+            {/* Trophy / result icon */}
+            <div style={{ fontSize:'2.8rem', marginBottom:6 }}>
+              {gameResult.isForfeit ? '🏃' : gameResult.winnerRole === 'draw' ? '🤝' : '🏆'}
+            </div>
+
+            {/* Result title */}
+            {(() => {
+              const iWon = (gameResult.winnerRole === 'host' && isHost) || (gameResult.winnerRole === 'guest' && isGuest)
+              const isDraw = gameResult.winnerRole === 'draw'
+              const color  = isDraw ? '#a78bfa' : iWon ? '#4ade80' : '#ef4444'
+              const label  = gameResult.isForfeit
+                ? (iWon ? 'WYGRAŁEŚ (WALKOWER)' : 'PRZEGRANA')
+                : isDraw ? 'REMIS' : iWon ? 'ZWYCIĘSTWO!' : 'PORAŻKA'
+              return (
+                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'2.2rem', letterSpacing:6, color, marginBottom:4 }}>
+                  {label}
+                </div>
+              )
+            })()}
+
+            <div style={{ color:'rgba(255,255,255,0.25)', fontSize:'0.65rem', letterSpacing:3, marginBottom:24 }}>
+              KONIEC GRY
+            </div>
+
+            {/* Scores table */}
+            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10, marginBottom:24 }}>
+              {[
+                { name: hostName,  tiles: gameResult.hostTiles,  color:'#FFD700', label:'HOST'  },
+                { name: guestName, tiles: gameResult.guestTiles, color:'#C0C0C0', label:'GOŚĆ'  },
+              ].map(p => (
+                <div key={p.label} style={{ padding:'14px 10px', background:'rgba(255,255,255,0.03)', border:`1px solid ${p.color}22`, borderRadius:12 }}>
+                  <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.72rem', letterSpacing:3, color: p.color, marginBottom:4 }}>{p.name}</div>
+                  <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'2rem', color:'#fff', lineHeight:1 }}>{p.tiles}</div>
+                  <div style={{ fontSize:'0.62rem', color:'rgba(255,255,255,0.25)', letterSpacing:1, marginTop:2 }}>pól</div>
+                </div>
+              ))}
+            </div>
+
+            {/* XP delta */}
+            <div style={{
+              padding:'12px 20px', borderRadius:10, marginBottom:24,
+              background: gameResult.myXpDelta >= 0 ? 'rgba(74,222,128,0.08)' : 'rgba(239,68,68,0.08)',
+              border: `1px solid ${gameResult.myXpDelta >= 0 ? 'rgba(74,222,128,0.25)' : 'rgba(239,68,68,0.25)'}`,
+              display:'flex', alignItems:'center', justifyContent:'center', gap:10,
+            }}>
+              <span style={{ fontSize:'1.2rem' }}>{gameResult.myXpDelta >= 0 ? '⭐' : '💔'}</span>
+              <div>
+                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.68rem', letterSpacing:3, color:'rgba(255,255,255,0.3)', marginBottom:2 }}>PUNKTY DOŚWIADCZENIA</div>
+                <div style={{ fontFamily:"'Bebas Neue',sans-serif", fontSize:'1.6rem', letterSpacing:2, color: gameResult.myXpDelta >= 0 ? '#4ade80' : '#ef4444' }}>
+                  {gameResult.myXpDelta >= 0 ? '+' : ''}{gameResult.myXpDelta} XP
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={async () => { await leaveRoom(); navigate('/multiplayer') }}
+              style={{
+                width:'100%', padding:'13px 0',
+                background:'rgba(212,175,55,0.12)', border:'1px solid rgba(212,175,55,0.35)',
+                borderRadius:10, color:'#D4AF37',
+                fontFamily:"'Bebas Neue',sans-serif", fontSize:'1.1rem', letterSpacing:5,
+                cursor:'pointer', transition:'all 0.2s',
+              }}
+            >
+              POWRÓT DO LOBBY
+            </button>
           </div>
         </div>
       )}

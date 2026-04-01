@@ -90,7 +90,7 @@ export type MPEvent =
   | { type: 'round_end';     winner: MPActivePlayer | 'draw'; tileIdx: number; hostScore: number; guestScore: number }
   | { type: 'feedback';      text: string; feedbackType: 'correct' | 'pass' | 'timeout' | 'voice' }
   | { type: 'game_start' }
-  | { type: 'game_end' }
+  | { type: 'game_end'; winner: MPActivePlayer | 'draw'; hostXpDelta: number; guestXpDelta: number; hostTiles: number; guestTiles: number }
   | { type: 'chat_message';  from: string; text: string; ts: number }
   | { type: 'game_settings'; duelTime: number; categoriesCount: number; gameMode: string; passPenalty: number }
   | { type: 'opponent_name'; name: string; avatar: string }
