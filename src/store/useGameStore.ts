@@ -129,18 +129,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
   showStats:  true,
 
   loadCategories: async () => {
+    const needsNewGame = () => get().tiles.length === 0
+
     const cached = getCached<unknown[]>(CACHE_KEY_CATS, CACHE_TTL_CATS)
     if (cached) {
       const full = normalizeQuestions(cached)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
-      get().newGame()
+      // Uruchom newGame tylko jeśli plansza jest pusta (pierwsze wejście)
+      if (needsNewGame()) get().newGame()
     }
     const { data: cats } = await queryCats()
     if (cats) {
       setCached(CACHE_KEY_CATS, cats, CACHE_TTL_CATS)
       const full = normalizeQuestions(cats)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
-      get().newGame()
+      // Po odświeżeniu z sieci: newGame tylko jeśli plansza nadal pusta
+      // (cache mógł ją już wypełnić lub gracz jest w trakcie gry)
+      if (needsNewGame()) get().newGame()
     }
   },
 

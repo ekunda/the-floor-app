@@ -90,6 +90,9 @@ export default function Game() {
 		}
 		window.addEventListener('keydown', handler)
 		return () => window.removeEventListener('keydown', handler)
+	// Zustand actions są stabilnymi referencjami — nie trzeba ich w deps.
+	// duel i appState zmieniają się i faktycznie wpływają na handler.
+	// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [appState, duel])
 
 	/* ── SPLASH ── */

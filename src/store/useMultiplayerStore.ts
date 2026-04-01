@@ -455,9 +455,12 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
   // ── Room subscription ─────────────────────────────────────────────────────
 
+  let _reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
   function subscribeRoom(roomId: string) {
     const { channel: old } = get()
-    old?.unsubscribe()
+    if (old) old.unsubscribe()
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null }
 
     const ch = supabase.channel(`room:${roomId}`, { config: { broadcast: { self: false } } })
 
@@ -486,7 +489,16 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
           if (room.status === 'finished') set({ status: 'finished' })
         }
       })
-      .subscribe()
+      .subscribe((chStatus, err) => {
+        // Auto-reconnect on channel error or unexpected close
+        if (chStatus === 'CHANNEL_ERROR' || chStatus === 'CLOSED') {
+          const { roomId: curRoom, status: curStatus } = get()
+          if (curRoom && curStatus !== 'idle' && curStatus !== 'finished') {
+            console.warn('[MP] Kanał zamknięty, reconnect za 2s…', err)
+            _reconnectTimer = setTimeout(() => subscribeRoom(curRoom), 2000)
+          }
+        }
+      })
 
     set({ channel: ch })
   }
@@ -622,7 +634,8 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     leaveRoom: async () => {
       const { channel, roomId, role } = get()
       stopTicker()
-      channel?.unsubscribe()
+      if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null }
+      if (channel) await channel.unsubscribe()
       if (roomId && role === 'host') {
         await supabase.from('game_rooms').update({ status: 'finished', updated_at: new Date().toISOString() }).eq('id', roomId)
       }

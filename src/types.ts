@@ -1,8 +1,19 @@
 export interface GameConfig {
-  GRID_COLS: number; GRID_ROWS: number; TILE_SIZE: number
+  // Board
+  GRID_COLS: number; GRID_ROWS: number; TILE_SIZE: number; BOARD_SHAPE: number
+  // Gameplay
   DUEL_TIME: number; PASS_PENALTY: number; FEEDBACK_MS: number
   WIN_CLOSE_MS: number; TOAST_MS: number; RANDOM_TILES: number
-  SHOW_STATS: number; SOUND_VOLUME: number; BOARD_SHAPE: number
+  MAX_PASSES: number; ROUND_TIMER: number; MAX_ROUNDS: number
+  // Sound
+  SOUND_VOLUME: number; MUSIC_VOLUME: number; SFX_VOLUME: number
+  // Voice
+  VOICE_PASS: number
+  // Display
+  SHOW_STATS: number; SHOW_ANSWER_HINT: number; TILE_FLIP_ANIM: number
+  // Multiplayer
+  MP_DUEL_TIME: number; MP_PASS_PENALTY: number; MP_FEEDBACK_MS: number
+  MP_WIN_CLOSE_MS: number; MP_XP_WIN: number; MP_XP_DRAW: number; MP_XP_LOSS: number
 }
 
 export interface PlayerSettings { name: string; color: string }
@@ -22,6 +33,7 @@ export interface DuelState {
   tileIdx: number; categoryId: string; categoryName: string; emoji: string
   questions: Question[]; usedIds: Set<string>; timer1: number; timer2: number
   active: 1 | 2; paused: boolean; started: boolean; currentQuestion: Question | null; lang: SpeechLang
+  passCount: number
 }
 export interface GameStats {
   goldTiles: number; silverTiles: number; totalTiles: number; goldPct: number; silverPct: number

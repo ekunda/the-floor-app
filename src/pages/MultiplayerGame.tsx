@@ -455,8 +455,8 @@ export default function MultiplayerGame() {
     const answer   = currAnswerRef.current
     const synonyms = currSynonymsRef.current
 
-    // Pass command
-    if (isPassCommand(transcript)) {
+    // Pass command — tylko na final (interim "pas" powoduje podwójny pas jak w DuelModal)
+    if (!strict && isPassCommand(transcript)) {
       if (passedQRef.current === qId) return  // already passed this question
       passedQRef.current = qId
       pass()
@@ -477,20 +477,23 @@ export default function MultiplayerGame() {
   // Speech is active only when duel is running AND it's your turn AND no modal
   const speechActive = speechEnabled && !!duel?.started && !duel?.paused && !exitConfirm
 
+  // Watchdog: jeśli recognition cicho umrze (Chrome bug ~co 60s),
+  // inkrementacja restartKey wymusza restart przez hook's useEffect dep.
+  const [restartKey, setRestartKey] = useState(0)
+
   const { listening, error: speechError } = useSpeechRecognition({
-    onFinal:   handleFinal,
-    onInterim: handleInterim,
-    active:    speechActive,
-    lang:      duel?.lang === 'both' ? ['pl-PL','en-US'] : (duel?.lang ?? 'pl-PL'),
+    onFinal:    handleFinal,
+    onInterim:  handleInterim,
+    active:     speechActive,
+    lang:       duel?.lang === 'both' ? ['pl-PL','en-US'] : (duel?.lang ?? 'pl-PL'),
+    restartKey,
   })
 
-  // Watchdog: restart recognition if it silently died (Chrome bug)
-  const [speechRetryKey, setSpeechRetryKey] = useState(0)
   useEffect(() => {
     if (!speechActive || listening) return
-    const t = setTimeout(() => setSpeechRetryKey(k => k + 1), 2500)
+    const t = setTimeout(() => setRestartKey(k => k + 1), 2500)
     return () => clearTimeout(t)
-  }, [speechActive, listening, speechRetryKey])
+  }, [speechActive, listening, restartKey])
 
   const handleClose = () => {
     closeDuel()

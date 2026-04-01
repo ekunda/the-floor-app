@@ -71,10 +71,16 @@ export function isSpeechRecognitionSupported(): boolean {
 }
 
 interface UseSpeechRecognitionOptions {
-  onFinal:   (transcript: string) => void
-  onInterim: (transcript: string) => void
-  active:    boolean
-  lang?:     string | string[]
+  onFinal:    (transcript: string) => void
+  onInterim:  (transcript: string) => void
+  active:     boolean
+  lang?:      string | string[]
+  /**
+   * Zmiana tej wartości wymusza natychmiastowy restart recognition.
+   * Używane przez watchdog w MultiplayerGame gdy recognition cicho umrze.
+   * Czystsze niż toggle active off→on z zewnątrz.
+   */
+  restartKey?: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -264,7 +270,7 @@ export function isPassCommand(spoken: string): boolean {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function useSpeechRecognition({
-  onFinal, onInterim, active, lang = 'pl-PL',
+  onFinal, onInterim, active, lang = 'pl-PL', restartKey = 0,
 }: UseSpeechRecognitionOptions) {
   const langs    = Array.isArray(lang) ? [...new Set(lang)] : [lang]
   const leapfrog = langs.length > 1
@@ -420,8 +426,9 @@ export function useSpeechRecognition({
     SRClassRef.current = SRC
     if (active) { startAll() } else { stopAll() }
     return () => stopAll()
+  // restartKey celowo w deps — zmiana wartości wymusza restart recognition
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, langs.join(',')])
+  }, [active, langs.join(','), restartKey])
 
   return { listening, error, updateGrammar }
 }
