@@ -218,10 +218,10 @@ export function useDuelLogic(): DuelLogicResult {
   const runCountdown = useCallback(() => {
     SoundEngine.play('countdown', 0.85)
     ;[
-      { label: '3', delay: 0   },
-      { label: '2', delay: 750 },
-      { label: '1', delay: 1500 },
-      { label: 'START!', delay: 2250 },
+      { label: '3', delay: 0    },
+      { label: '2', delay: 1200 },
+      { label: '1', delay: 2400 },
+      { label: 'START!', delay: 3600 },
     ].forEach(({ label, delay }) => {
       const id = setTimeout(() => setCountdown(label), delay)
       countdownTimeouts.current.push(id)
@@ -233,7 +233,7 @@ export function useDuelLogic(): DuelLogicResult {
       const q = nextQuestion()
       useGameStore.setState(s => ({ duel: s.duel ? { ...s.duel, paused: false, currentQuestion: q } : null }))
       SoundEngine.startBg('duelMusic', 0.22)
-    }, 3100)
+    }, 5000)
     countdownTimeouts.current.push(finalId)
   }, [nextQuestion])
 
