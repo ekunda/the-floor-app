@@ -17,7 +17,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 import { create } from 'zustand'
 import { SoundEngine } from '../lib/SoundEngine'
-import { getCached, invalidateCache, setCached, supabase } from '../lib/supabase'
+import { getCachedStale, invalidateCache, setCached, supabase } from '../lib/supabase'
 import { GameConfig, PlayerSettings } from '../types'
 
 export const DEFAULTS: GameConfig = {
@@ -138,18 +138,20 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 	fetch: async () => {
 		set({ loading: true })
 		try {
-			// 1. Cache — natychmiastowe UI
-			const cached = getCached<{
+			// 1. Stale-while-revalidate — natychmiastowe UI z cache
+			const cached = getCachedStale<{
 				config: GameConfig
 				tileCategories: string[]
 				players: [PlayerSettings, PlayerSettings]
 			}>(CACHE_KEY_CFG, CACHE_TTL_CFG)
 			if (cached) {
-				set({ config: cached.config, tileCategories: cached.tileCategories, players: cached.players })
-				SoundEngine.init(cached.config.MUSIC_VOLUME, cached.config.SFX_VOLUME)
+				set({ config: cached.data.config, tileCategories: cached.data.tileCategories, players: cached.data.players })
+				SoundEngine.init(cached.data.config.MUSIC_VOLUME, cached.data.config.SFX_VOLUME)
+				// If cache is fresh, skip network fetch entirely
+				if (cached.fresh) { set({ loading: false }); return }
 			}
 
-			// 2. Supabase — zawsze odśwież
+			// 2. Supabase — revalidate (only when cache is stale or missing)
 			const { data } = await supabase.from('config').select('*')
 			if (data && data.length > 0) {
 				const merged = { ...DEFAULTS }
@@ -186,7 +188,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 				// Aktualizuj SoundEngine
 				SoundEngine.init(merged.MUSIC_VOLUME, merged.SFX_VOLUME)
 
-				setCached(CACHE_KEY_CFG, { config: merged, tileCategories: tileCats, players }, CACHE_TTL_CFG)
+				setCached(CACHE_KEY_CFG, { config: merged, tileCategories: tileCats, players })
 				set({ config: merged, tileCategories: tileCats, players })
 			}
 		} catch (e) {

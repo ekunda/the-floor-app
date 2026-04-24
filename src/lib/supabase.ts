@@ -79,6 +79,17 @@ export function getCached<T>(key: string, ttlMs = 60_000): T | null {
   return hit.data
 }
 
+/**
+ * Stale-while-revalidate: returns data even if TTL expired.
+ * Caller should revalidate in background if stale.
+ */
+export function getCachedStale<T>(key: string, ttlMs = 60_000): { data: T; fresh: boolean } | null {
+  const hit = _cache.get(key) as CacheEntry<T> | undefined
+  if (!hit) return null
+  const fresh = Date.now() - hit.ts <= ttlMs
+  return { data: hit.data, fresh }
+}
+
 /** Zapisuje wartość w cache. */
 export function setCached<T>(key: string, data: T): void {
   _cache.set(key, { data, ts: Date.now() })

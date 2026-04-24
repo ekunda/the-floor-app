@@ -67,7 +67,7 @@ export function useDuelLogic(): DuelLogicResult {
   const [imageUrl,      setImageUrl]      = useState('')
   const [feedback,      setFeedback]      = useState<{ text: string; type: FeedbackType }>({ text: '', type: '' })
   const [winner,        setWinner]        = useState<WinnerNum>(null)
-  const [speechEnabled, setSpeechEnabled] = useState(false)
+  const [speechEnabled, setSpeechEnabled] = useState(true)
   const [hintLetter,    setHintLetter]    = useState<string | null>(null)
 
   // ── Refs ──────────────────────────────────────────────────────────────────
@@ -218,10 +218,10 @@ export function useDuelLogic(): DuelLogicResult {
   const runCountdown = useCallback(() => {
     SoundEngine.play('countdown', 0.85)
     ;[
-      { label: '3', delay: 0    },
-      { label: '2', delay: 1000 },
-      { label: '1', delay: 2000 },
-      { label: 'START!', delay: 3000 },
+      { label: '3', delay: 0   },
+      { label: '2', delay: 750 },
+      { label: '1', delay: 1500 },
+      { label: 'START!', delay: 2250 },
     ].forEach(({ label, delay }) => {
       const id = setTimeout(() => setCountdown(label), delay)
       countdownTimeouts.current.push(id)
@@ -233,7 +233,7 @@ export function useDuelLogic(): DuelLogicResult {
       const q = nextQuestion()
       useGameStore.setState(s => ({ duel: s.duel ? { ...s.duel, paused: false, currentQuestion: q } : null }))
       SoundEngine.startBg('duelMusic', 0.22)
-    }, 4300)
+    }, 3100)
     countdownTimeouts.current.push(finalId)
   }, [nextQuestion])
 
@@ -323,7 +323,7 @@ export function useDuelLogic(): DuelLogicResult {
           const cur = duelRef.current
           if (!cur?.started || blockRef.current) return
           firePas(cur.currentQuestion?.id ?? null)
-        }, 180)
+        }, 100)
       }
       return
     }

@@ -8,7 +8,7 @@
 //   - restoreSession() przywraca passCount
 // ─────────────────────────────────────────────────────────────────────────────
 import { create } from 'zustand'
-import { getCached, setCached, supabase } from '../lib/supabase'
+import { getCachedStale, setCached, supabase } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
 import { Category, DuelState, GameStats, Question, Tile, TileOwner } from '../types'
 import { BOARD_PRESETS, useConfigStore } from './useConfigStore'
@@ -98,7 +98,7 @@ let _passLock    = false
 let _correctLock = false
 let _lastPassedQuestionId: string | null = null
 let _lastPassTime = 0
-const PASS_DEBOUNCE_MS = 700
+const PASS_DEBOUNCE_MS = 400
 
 function resetPassLocks() {
   _passLock             = false
@@ -131,20 +131,20 @@ export const useGameStore = create<GameStore>((set, get) => ({
   loadCategories: async () => {
     const needsNewGame = () => get().tiles.length === 0
 
-    const cached = getCached<unknown[]>(CACHE_KEY_CATS, CACHE_TTL_CATS)
+    // Stale-while-revalidate: use cached data immediately, revalidate in background
+    const cached = getCachedStale<unknown[]>(CACHE_KEY_CATS, CACHE_TTL_CATS)
     if (cached) {
-      const full = normalizeQuestions(cached)
+      const full = normalizeQuestions(cached.data)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
-      // Uruchom newGame tylko jeśli plansza jest pusta (pierwsze wejście)
       if (needsNewGame()) get().newGame()
+      // If cache is fresh, skip network fetch entirely
+      if (cached.fresh) return
     }
     const { data: cats } = await queryCats()
     if (cats) {
-      setCached(CACHE_KEY_CATS, cats, CACHE_TTL_CATS)
+      setCached(CACHE_KEY_CATS, cats)
       const full = normalizeQuestions(cats)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
-      // Po odświeżeniu z sieci: newGame tylko jeśli plansza nadal pusta
-      // (cache mógł ją już wypełnić lub gracz jest w trakcie gry)
       if (needsNewGame()) get().newGame()
     }
   },
@@ -154,7 +154,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!saved) return false
     const [{ data: cats }] = await Promise.all([queryCats(), useConfigStore.getState().fetch()])
     const categories = normalizeQuestions(cats ?? [])
-    if (cats) setCached(CACHE_KEY_CATS, cats, CACHE_TTL_CATS)
+    if (cats) setCached(CACHE_KEY_CATS, cats)
     set({ categories, tiles: saved.tiles, cursor: saved.cursor, showStats: saved.showStats })
 
     if (saved.duel) {
@@ -374,5 +374,5 @@ useGameStore.subscribe(state => {
   if (_saveTimer) clearTimeout(_saveTimer)
   _saveTimer = setTimeout(() => {
     saveGameState(state.tiles, state.cursor, state.showStats, state.duel)
-  }, 400)
+  }, 200)
 })

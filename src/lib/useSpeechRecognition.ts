@@ -337,7 +337,7 @@ export function useSpeechRecognition({
     rec.lang            = l
     rec.continuous      = true
     rec.interimResults  = true
-    rec.maxAlternatives = 3   // 1 na interim jest ignorowane przez Chrome i tak
+    rec.maxAlternatives = 4   // Check more alternatives for faster detection
 
     // Podepnij gramatykę jeśli dostępna
     if (grammarRef.current) {
@@ -351,16 +351,23 @@ export function useSpeechRecognition({
         const result = e.results[i]
         if (result.isFinal) {
           lastInterim.current = ''
-          const alts = Math.min(result.length ?? 1, 3)
+          const alts = Math.min(result.length ?? 1, 4)
           for (let a = 0; a < alts; a++) {
             const t = result[a]?.transcript?.trim()
             if (t) onFinalRef.current(t)
           }
         } else {
-          const t = result[0]?.transcript?.trim()
-          if (!t || t === lastInterim.current) continue
-          lastInterim.current = t
-          onInterimRef.current(t)
+          // Process ALL interim alternatives — first match wins for speed
+          const alts = Math.min(result.length ?? 1, 4)
+          for (let a = 0; a < alts; a++) {
+            const t = result[a]?.transcript?.trim()
+            if (!t) continue
+            if (a === 0) {
+              if (t === lastInterim.current) continue
+              lastInterim.current = t
+            }
+            onInterimRef.current(t)
+          }
         }
       }
     }
