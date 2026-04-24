@@ -155,7 +155,26 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const [{ data: cats }] = await Promise.all([queryCats(), useConfigStore.getState().fetch()])
     const categories = normalizeQuestions(cats ?? [])
     if (cats) setCached(CACHE_KEY_CATS, cats)
-    set({ categories, tiles: saved.tiles, cursor: saved.cursor, showStats: saved.showStats })
+
+    // ── Guard: preset could have changed in admin between sessions ────────────
+    // Old tiles (np. 8) + new preset (6×2 = 12) = czarne puste pola w canvasie.
+    // Odrzucamy taki zapis i startujemy świeżą grę z poprawnym rozmiarem.
+    const cfg           = useConfigStore.getState().config
+    const preset        = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
+    const expectedTotal = preset.cols * preset.rows
+    if (saved.tiles.length !== expectedTotal) {
+      clearGameState()
+      set({ categories, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
+      get().newGame()
+      return true
+    }
+
+    set({
+      categories,
+      tiles:     saved.tiles,
+      cursor:    Math.min(Math.max(saved.cursor, 0), expectedTotal - 1),
+      showStats: saved.showStats,
+    })
 
     if (saved.duel) {
       const sd  = saved.duel
