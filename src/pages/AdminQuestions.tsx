@@ -458,13 +458,13 @@ export default function AdminQuestions() {
             {/* Sort */}
             <select value={sort} onChange={e => setSort(e.target.value as SortKey)}
               style={{ ...selectStyle, minWidth: 150 }}>
-              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value} style={{background:'#181818',color:'#fff'}}>{o.label}</option>)}
             </select>
 
             {/* Rozmiar strony */}
             <select value={pageSize} onChange={e => setPageSize(Number(e.target.value))}
               style={{ ...selectStyle, minWidth: 90 }}>
-              {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n}>{n} / str.</option>)}
+              {PAGE_SIZE_OPTIONS.map(n => <option key={n} value={n} style={{background:'#181818',color:'#fff'}}>{n} / str.</option>)}
             </select>
           </div>
 

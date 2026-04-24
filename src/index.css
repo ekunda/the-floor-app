@@ -53,6 +53,15 @@
   }
 }
 
+/* Dark dropdown styling for admin panels */
+select {
+  color-scheme: dark;
+}
+select option {
+  background: #181818;
+  color: #fff;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: #000; }

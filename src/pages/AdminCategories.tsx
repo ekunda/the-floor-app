@@ -9,6 +9,9 @@ export default function AdminCategories() {
   const [name, setName] = useState('')
   const [emoji, setEmoji] = useState('🎯')
   const [editing, setEditing] = useState<Category | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [adding, setAdding] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   const load = async () => {
     const { data } = await supabase.from('categories').select('*').order('created_at')
@@ -18,22 +21,44 @@ export default function AdminCategories() {
   useEffect(() => { load() }, [])
 
   const add = async () => {
-    if (!name.trim()) return
-    await supabase.from('categories').insert({ name: name.trim(), emoji })
-    setName('')
-    setEmoji('🎯')
-    load()
+    if (!name.trim() || adding) return
+    setAdding(true)
+    setError(null)
+    try {
+      const { error: err } = await supabase.from('categories').insert({ name: name.trim(), emoji })
+      if (err) throw new Error(err.message)
+      setName('')
+      setEmoji('🎯')
+      await load()
+    } catch (e: any) {
+      setError(e.message ?? 'Błąd dodawania kategorii')
+    } finally {
+      setAdding(false)
+    }
   }
 
   const saveEdit = async () => {
-    if (!editing) return
-    await supabase.from('categories').update({ name: editing.name, emoji: editing.emoji }).eq('id', editing.id)
-    setEditing(null)
-    load()
+    if (!editing || saving) return
+    setSaving(true)
+    setError(null)
+    try {
+      const { error: err } = await supabase
+        .from('categories')
+        .update({ name: editing.name, emoji: editing.emoji })
+        .eq('id', editing.id)
+      if (err) throw new Error(err.message)
+      setEditing(null)
+      await load()
+    } catch (e: any) {
+      setError(e.message ?? 'Błąd zapisu kategorii')
+    } finally {
+      setSaving(false)
+    }
   }
 
   const remove = async (id: string) => {
     if (!confirm('Usunąć kategorię i wszystkie pytania?')) return
+    setError(null)
     try {
       // 1. Pobierz pytania kategorii (potrzebne do usunięcia obrazów)
       const { data: qs } = await supabase.from('questions').select('id,image_path').eq('category_id', id)
@@ -50,12 +75,13 @@ export default function AdminCategories() {
         }
       }
       // 4. Usuń kategorię
-      await supabase.from('categories').delete().eq('id', id)
+      const { error: err } = await supabase.from('categories').delete().eq('id', id)
+      if (err) throw new Error(err.message)
+      await load()
     } catch (e: any) {
       console.warn('[Admin] Błąd usuwania kategorii:', e)
-      alert('Błąd podczas usuwania: ' + (e.message ?? 'nieznany'))
+      setError('Błąd podczas usuwania: ' + (e.message ?? 'nieznany'))
     }
-    load()
   }
 
   const logout = async () => {
@@ -122,6 +148,19 @@ export default function AdminCategories() {
         </button>
       </div>
 
+      {/* Error message */}
+      {error && (
+        <div style={{
+          marginBottom: 16, padding: '10px 14px', borderRadius: 8,
+          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
+          color: '#f87171', fontSize: '0.82rem',
+          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+        }}>
+          <span>⚠️ {error}</span>
+          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer' }}>✕</button>
+        </div>
+      )}
+
       {/* Add form */}
       <div
         style={{
@@ -148,21 +187,23 @@ export default function AdminCategories() {
         />
         <button
           onClick={add}
+          disabled={adding || !name.trim()}
           style={{
             padding: '10px 24px',
-            background: '#D4AF37',
+            background: adding ? 'rgba(212,175,55,0.5)' : '#D4AF37',
             color: '#000',
             fontFamily: "'Bebas Neue', sans-serif",
             fontSize: '1rem',
             letterSpacing: 3,
             border: 'none',
             borderRadius: 10,
-            cursor: 'pointer',
+            cursor: adding || !name.trim() ? 'default' : 'pointer',
             transition: 'all 0.2s',
+            opacity: adding ? 0.6 : 1,
           }}
-          onMouseEnter={e => (e.currentTarget.style.background = '#FFD700')}
-          onMouseLeave={e => (e.currentTarget.style.background = '#D4AF37')}>
-          + DODAJ
+          onMouseEnter={e => { if (!adding) e.currentTarget.style.background = '#FFD700' }}
+          onMouseLeave={e => { if (!adding) e.currentTarget.style.background = '#D4AF37' }}>
+          {adding ? '⏳...' : '+ DODAJ'}
         </button>
       </div>
 
@@ -192,17 +233,19 @@ export default function AdminCategories() {
                 />
                 <button
                   onClick={saveEdit}
+                  disabled={saving}
                   style={{
-                    background: '#22c55e',
+                    background: saving ? 'rgba(34,197,94,0.5)' : '#22c55e',
                     border: 'none',
                     borderRadius: 8,
                     color: '#000',
                     padding: '7px 16px',
                     fontSize: '0.8rem',
                     fontWeight: 700,
-                    cursor: 'pointer',
+                    cursor: saving ? 'default' : 'pointer',
+                    opacity: saving ? 0.6 : 1,
                   }}>
-                  Zapisz
+                  {saving ? '⏳...' : 'Zapisz'}
                 </button>
                 <button
                   onClick={() => setEditing(null)}

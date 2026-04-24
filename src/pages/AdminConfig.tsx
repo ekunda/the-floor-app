@@ -113,24 +113,52 @@ export default function AdminConfig() {
     setHistory(data ?? []); setHistLoading(false)
   }
 
+  const [catSaving, setCatSaving] = useState(false)
+  const [catAdding, setCatAdding] = useState(false)
+  const [catError, setCatError] = useState<string | null>(null)
+
   const addCat = async () => {
-    if (!catName.trim()) return
-    await supabase.from('categories').insert({ name: catName.trim(), emoji: catEmoji, lang: catLang })
-    setCatName(''); setCatEmoji('🎯'); loadCats()
+    if (!catName.trim() || catAdding) return
+    setCatAdding(true); setCatError(null)
+    try {
+      const { error: err } = await supabase.from('categories').insert({ name: catName.trim(), emoji: catEmoji, lang: catLang })
+      if (err) throw new Error(err.message)
+      setCatName(''); setCatEmoji('🎯'); await loadCats()
+    } catch (e: any) {
+      setCatError(e.message ?? 'Błąd dodawania kategorii')
+    } finally { setCatAdding(false) }
   }
   const saveEditCat = async () => {
-    if (!editing) return
-    await supabase.from('categories').update({ name: editing.name, emoji: editing.emoji, lang: editing.lang ?? 'pl-PL' }).eq('id', editing.id)
-    setEditing(null); loadCats()
+    if (!editing || catSaving) return
+    setCatSaving(true); setCatError(null)
+    try {
+      const { error: err } = await supabase.from('categories')
+        .update({ name: editing.name, emoji: editing.emoji, lang: editing.lang ?? 'pl-PL' })
+        .eq('id', editing.id)
+      if (err) throw new Error(err.message)
+      setEditing(null); await loadCats()
+    } catch (e: any) {
+      setCatError(e.message ?? 'Błąd zapisu kategorii')
+    } finally { setCatSaving(false) }
   }
   const removeCat = async (id: string) => {
     if (!confirm('Usunac kategorie i wszystkie pytania?')) return
-    await supabase.from('questions').delete().eq('category_id', id)
-    await supabase.from('categories').delete().eq('id', id)
-    loadCats()
+    setCatError(null)
+    try {
+      await supabase.from('questions').delete().eq('category_id', id)
+      const { error: err } = await supabase.from('categories').delete().eq('id', id)
+      if (err) throw new Error(err.message)
+      await loadCats()
+    } catch (e: any) {
+      setCatError(e.message ?? 'Błąd usuwania kategorii')
+    }
   }
   const handleUpdate = async (key: keyof GameConfig, value: number) => {
-    await update(key, value); setSaved(true); setTimeout(() => setSaved(false), 1500)
+    try {
+      await update(key, value); setSaved(true); setTimeout(() => setSaved(false), 1500)
+    } catch (e: any) {
+      console.warn('[AdminConfig] Błąd aktualizacji:', e)
+    }
   }
   const flash = () => { setSaved(true); setTimeout(() => setSaved(false), 1500) }
   const handleLogout = () => { clearSession(); navigate('/admin') }
@@ -249,7 +277,8 @@ export default function AdminConfig() {
             removeCat={removeCat} inp={inp} bulkCatId={bulkCatId} setBulkCatId={setBulkCatId}
             bulkFiles={bulkFiles} setBulkFiles={setBulkFiles} bulkProgress={bulkProgress}
             bulkUploading={bulkUploading} bulkDone={bulkDone} setBulkDone={setBulkDone}
-            bulkError={bulkError} bulkRef={bulkRef} handleBulkUpload={handleBulkUpload} />
+            bulkError={bulkError} bulkRef={bulkRef} handleBulkUpload={handleBulkUpload}
+            catSaving={catSaving} catAdding={catAdding} catError={catError} setCatError={setCatError} />
         )}
         {mode === 'sp' && spSect === 'board' && (
           <BoardSection config={config} handleUpdate={handleUpdate} cats={cats}
@@ -501,8 +530,8 @@ function BoardSection({config, handleUpdate, cats, tileCategories, setTileCatego
           <div style={{display:'grid',gridTemplateColumns:'repeat('+preset.cols+',1fr)',gap:6,marginBottom:10}}>
             {Array.from({length:totalTiles}).map((_,i) => (
               <select key={i} value={tileCategories[i]||''} onChange={e=>setTileCategory(i,e.target.value)} style={{background:tileCategories[i]?'rgba(212,175,55,0.1)':'rgba(255,255,255,0.04)',border:'1px solid '+(tileCategories[i]?'rgba(212,175,55,0.4)':'rgba(255,255,255,0.1)'),borderRadius:8,padding:'6px 4px',color:'#fff',outline:'none',fontSize:'0.68rem',width:'100%',cursor:'pointer'}}>
-                <option value=''>Auto</option>
-                {cats.map((c: any) => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+                <option value='' style={{background:'#181818',color:'#aaa'}}>Auto</option>
+                {cats.map((c: any) => <option key={c.id} value={c.id} style={{background:'#181818',color:'#fff'}}>{c.emoji} {c.name}</option>)}
               </select>
             ))}
           </div>
@@ -520,17 +549,26 @@ function BoardSection({config, handleUpdate, cats, tileCategories, setTileCatego
     </div>
   )
 }
-function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatEmoji,catLang,setCatLang,editing,setEditing,addCat,saveEditCat,removeCat,inp,bulkCatId,setBulkCatId,bulkFiles,setBulkFiles,bulkProgress,bulkUploading,bulkDone,setBulkDone,bulkError,bulkRef,handleBulkUpload}: any) {
+function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatEmoji,catLang,setCatLang,editing,setEditing,addCat,saveEditCat,removeCat,inp,bulkCatId,setBulkCatId,bulkFiles,setBulkFiles,bulkProgress,bulkUploading,bulkDone,setBulkDone,bulkError,bulkRef,handleBulkUpload,catSaving,catAdding,catError,setCatError}: any) {
   return (
     <div>
       <SectionTitle icon='Kategorie' title='Kategorie' />
+
+      {/* Error message */}
+      {catError && (
+        <div style={{marginBottom:16,padding:'10px 14px',borderRadius:8,background:'rgba(239,68,68,0.1)',border:'1px solid rgba(239,68,68,0.3)',color:'#f87171',fontSize:'0.82rem',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+          <span>⚠️ {catError}</span>
+          <button onClick={()=>setCatError(null)} style={{background:'none',border:'none',color:'#f87171',cursor:'pointer'}}>✕</button>
+        </div>
+      )}
+
       <div style={{padding:16,marginBottom:20,background:'rgba(255,255,255,0.03)',border:'1px solid rgba(255,255,255,0.08)',borderRadius:12}}>
         <div style={{color:'rgba(255,255,255,0.4)',fontSize:'0.72rem',letterSpacing:1,marginBottom:12}}>NOWA KATEGORIA</div>
         <div style={{display:'flex',gap:8,flexWrap:'wrap' as const}}>
           <input value={catEmoji} onChange={e=>setCatEmoji(e.target.value)} style={{...inp,width:52,textAlign:'center' as const,fontSize:'1.2rem'}} />
           <input value={catName} onChange={e=>setCatName(e.target.value)} onKeyDown={(e:any)=>e.key==='Enter'&&addCat()} placeholder='Nazwa kategorii' style={{...inp,flex:1,minWidth:160}} />
           <LangPicker value={catLang} onChange={setCatLang} />
-          <button onClick={addCat} disabled={!catName.trim()} style={{padding:'8px 18px',borderRadius:8,background:catName.trim()?'linear-gradient(135deg,#D4AF37,#FFD700)':'rgba(255,255,255,0.08)',color:catName.trim()?'#000':'rgba(255,255,255,0.3)',border:'none',cursor:catName.trim()?'pointer':'default',fontWeight:700,fontSize:'0.85rem'}}>+ Dodaj</button>
+          <button onClick={addCat} disabled={!catName.trim()||catAdding} style={{padding:'8px 18px',borderRadius:8,background:catName.trim()&&!catAdding?'linear-gradient(135deg,#D4AF37,#FFD700)':'rgba(255,255,255,0.08)',color:catName.trim()&&!catAdding?'#000':'rgba(255,255,255,0.3)',border:'none',cursor:catName.trim()&&!catAdding?'pointer':'default',fontWeight:700,fontSize:'0.85rem',opacity:catAdding?0.6:1}}>{catAdding?'⏳...':'+ Dodaj'}</button>
         </div>
       </div>
       {catsLoading ? <div style={{textAlign:'center' as const,color:'rgba(255,255,255,0.2)',padding:40}}>Ladowanie...</div>
@@ -543,7 +581,7 @@ function CategoriesSection({cats,catsLoading,catName,setCatName,catEmoji,setCatE
                 <><input value={editing.emoji} onChange={e=>setEditing({...editing,emoji:e.target.value})} style={{...inp,width:48,textAlign:'center' as const,fontSize:'1.1rem'}} />
                 <input value={editing.name} onChange={e=>setEditing({...editing,name:e.target.value})} style={{...inp,flex:1}} autoFocus />
                 <LangPicker value={editing.lang||'pl-PL'} onChange={(v:any)=>setEditing({...editing,lang:v})} />
-                <button onClick={saveEditCat} style={{padding:'6px 12px',borderRadius:8,background:'rgba(212,175,55,0.2)',border:'1px solid #D4AF37',color:'#D4AF37',cursor:'pointer',fontSize:'0.82rem'}}>Zap</button>
+                <button onClick={saveEditCat} disabled={catSaving} style={{padding:'6px 12px',borderRadius:8,background:catSaving?'rgba(212,175,55,0.1)':'rgba(212,175,55,0.2)',border:'1px solid '+(catSaving?'rgba(212,175,55,0.4)':'#D4AF37'),color:catSaving?'rgba(212,175,55,0.5)':'#D4AF37',cursor:catSaving?'default':'pointer',fontSize:'0.82rem',opacity:catSaving?0.6:1}}>{catSaving?'⏳...':'Zap'}</button>
                 <button onClick={()=>setEditing(null)} style={{padding:'6px 12px',borderRadius:8,background:'transparent',border:'1px solid rgba(255,255,255,0.12)',color:'rgba(255,255,255,0.4)',cursor:'pointer',fontSize:'0.82rem'}}>X</button></>
               ) : (
                 <><span style={{fontSize:'1.4rem',minWidth:32,textAlign:'center' as const}}>{cat.emoji}</span>
