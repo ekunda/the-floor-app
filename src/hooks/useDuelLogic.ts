@@ -89,6 +89,7 @@ export function useDuelLogic(): DuelLogicResult {
   const handleCloseRef      = useRef<() => void>(() => {})
   const matchedQIdRef       = useRef<string | null>(null)
   const passedQIdRef        = useRef<string | null>(null)
+  const lastPassFiredTs     = useRef(0)           // cooldown: ignore pass for 1.2s after firing
   const prevActiveTimerRef  = useRef<number | null>(null)
   const pasDebounceTimer    = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -109,7 +110,9 @@ export function useDuelLogic(): DuelLogicResult {
 
     matchDataRef.current      = answer ? buildMatchData(answer, synonyms) : null
     matchedQIdRef.current     = null
-    passedQIdRef.current      = null
+    // Don't reset passedQIdRef here — the cooldown timer (lastPassFiredTs)
+    // prevents lingering "pas" audio from firing on the new question.
+    // Resetting early was the root cause of the double-pass bug.
     setHintLetter(null)
 
     if (answer && updateGrammarRef.current) updateGrammarRef.current(answer, synonyms)
@@ -195,6 +198,7 @@ export function useDuelLogic(): DuelLogicResult {
       winnerHandled.current       = false
       matchedQIdRef.current       = null
       passedQIdRef.current        = null
+      lastPassFiredTs.current     = 0
       prevActiveTimerRef.current  = null
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -295,10 +299,16 @@ export function useDuelLogic(): DuelLogicResult {
   handlePassRef.current    = handlePass
   handleCorrectRef.current = handleCorrect
 
-  // ── Voice: firePas z debounce ─────────────────────────────────────────────
+  // ── Voice: firePas z debounce + cooldown ──────────────────────────────────
+  const PASS_COOLDOWN_MS = 1200  // ignore all pass commands for this long after firing
+
   const firePas = useCallback((questionId: string | null) => {
     if (passedQIdRef.current === questionId) return
-    passedQIdRef.current = questionId
+    // Cooldown: ignore if another pass fired recently (prevents double-pass
+    // when lingering audio from "pas" triggers on the NEXT question)
+    if (Date.now() - lastPassFiredTs.current < PASS_COOLDOWN_MS) return
+    passedQIdRef.current   = questionId
+    lastPassFiredTs.current = Date.now()
     handlePassRef.current(true)  // fromVoice=true → pokazuje 🎤 PAS
   }, [])
 
@@ -307,9 +317,9 @@ export function useDuelLogic(): DuelLogicResult {
     if (!d?.started || blockRef.current || countdownRef.current) return
     const questionId = d.currentQuestion?.id ?? null
 
-    // PAS — tylko na final (interim "pas" powoduje podwójny pas)
+    // PAS — cooldown + per-question guard prevent double-fire
     if (voicePassRef.current && isPassCommand(transcript)) {
-      if (passedQIdRef.current === questionId) {
+      if (passedQIdRef.current === questionId || Date.now() - lastPassFiredTs.current < PASS_COOLDOWN_MS) {
         if (pasDebounceTimer.current) { clearTimeout(pasDebounceTimer.current); pasDebounceTimer.current = null }
         return
       }
