@@ -206,14 +206,24 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 	},
 
 	update: async (key, value) => {
-		// Upsert jako liczba (jsonb zachowa właściwy typ)
-		await supabase.from('config').upsert({ key, value })
+		// 1. Optimistic update — UI reaguje natychmiast
 		set(s => ({ config: { ...s.config, [key]: value } }))
-		invalidateCache(CACHE_KEY_CFG)
 
-		// Aktualizuj SoundEngine natychmiast
+		// Aktualizuj SoundEngine natychmiast (bez czekania na sieć)
 		if (key === 'MUSIC_VOLUME') SoundEngine.setMusicVolume(value)
 		if (key === 'SFX_VOLUME') SoundEngine.setSfxVolume(value)
+
+		// 2. Persist do Supabase (jeśli fail — toast, rollback nie jest potrzebny,
+		//    bo lokalny state już jest poprawny; user odświeży stronę żeby resync)
+		try {
+			const { error } = await supabase.from('config').upsert({ key, value })
+			if (error) throw new Error(error.message)
+			invalidateCache(CACHE_KEY_CFG)
+		} catch (e: unknown) {
+			const msg = e instanceof Error ? e.message : 'Błąd zapisu konfiguracji'
+			console.warn('[ConfigStore] update error:', msg)
+			throw e instanceof Error ? e : new Error(msg)
+		}
 	},
 
 	// ── NAPRAWA: Zapis do Supabase + localStorage ──────────────────────────────

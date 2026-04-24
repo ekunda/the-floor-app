@@ -1,86 +1,117 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// AdminCategories — standalone zarządzanie kategoriami
+//
+// Fast & reliable:
+//  - Optimistic add/update/delete (UI reaguje natychmiast)
+//  - useAsyncAction: zero silent failures, auto-guard dla double-click
+//  - Toast notifications zamiast alert()
+//  - Cascade delete pytań + obrazów w paczkach
+// ─────────────────────────────────────────────────────────────────────────────
 import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { Category } from '../types'
+import { useAsyncAction } from '../hooks/useAsyncAction'
+import { useToast } from '../hooks/useToast'
+import {
+  AdminButton, AdminInput, Card, EmptyState, Loading, SectionTitle, T, ToastContainer,
+} from '../components/admin/AdminUI'
 
 export default function AdminCategories() {
   const navigate = useNavigate()
-  const [cats, setCats] = useState<Category[]>([])
-  const [name, setName] = useState('')
-  const [emoji, setEmoji] = useState('🎯')
-  const [editing, setEditing] = useState<Category | null>(null)
-  const [saving, setSaving] = useState(false)
-  const [adding, setAdding] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const toast = useToast()
 
+  const [cats,     setCats]     = useState<Category[]>([])
+  const [loading,  setLoading]  = useState(true)
+  const [name,     setName]     = useState('')
+  const [emoji,    setEmoji]    = useState('🎯')
+  const [editing,  setEditing]  = useState<Category | null>(null)
+
+  // ── Load ──────────────────────────────────────────────────────────────────
   const load = async () => {
-    const { data } = await supabase.from('categories').select('*').order('created_at')
-    setCats(data ?? [])
+    setLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('categories')
+        .select('id,name,emoji,lang,created_at')
+        .order('created_at')
+      if (error) throw new Error(error.message)
+      setCats(data ?? [])
+    } catch (e: unknown) {
+      toast.error((e instanceof Error ? e.message : 'Błąd ładowania kategorii'))
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { load() }, [])
 
-  const add = async () => {
-    if (!name.trim() || adding) return
-    setAdding(true)
-    setError(null)
-    try {
-      const { error: err } = await supabase.from('categories').insert({ name: name.trim(), emoji })
-      if (err) throw new Error(err.message)
-      setName('')
-      setEmoji('🎯')
-      await load()
-    } catch (e: any) {
-      setError(e.message ?? 'Błąd dodawania kategorii')
-    } finally {
-      setAdding(false)
-    }
-  }
+  // ── Add ───────────────────────────────────────────────────────────────────
+  const { run: addCat, loading: adding } = useAsyncAction(async () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const { data, error } = await supabase
+      .from('categories')
+      .insert({ name: trimmed, emoji })
+      .select('id,name,emoji,lang,created_at')
+      .single()
+    if (error) throw new Error(error.message)
+    if (data) setCats(prev => [...prev, data as Category])
+    setName(''); setEmoji('🎯')
+    toast.success(`Dodano: ${trimmed}`)
+  }, { onError: e => toast.error(e.message) })
 
-  const saveEdit = async () => {
-    if (!editing || saving) return
-    setSaving(true)
-    setError(null)
-    try {
-      const { error: err } = await supabase
-        .from('categories')
-        .update({ name: editing.name, emoji: editing.emoji })
-        .eq('id', editing.id)
-      if (err) throw new Error(err.message)
-      setEditing(null)
-      await load()
-    } catch (e: any) {
-      setError(e.message ?? 'Błąd zapisu kategorii')
-    } finally {
-      setSaving(false)
-    }
-  }
+  // ── Save edit ─────────────────────────────────────────────────────────────
+  const { run: saveEdit, loading: saving } = useAsyncAction(async () => {
+    if (!editing) return
+    const { error } = await supabase
+      .from('categories')
+      .update({ name: editing.name, emoji: editing.emoji })
+      .eq('id', editing.id)
+    if (error) throw new Error(error.message)
+    // Optimistic replace w liście
+    setCats(prev => prev.map(c => c.id === editing.id ? editing : c))
+    setEditing(null)
+    toast.success('Zapisano zmiany')
+  }, { onError: e => toast.error(e.message) })
 
-  const remove = async (id: string) => {
-    if (!confirm('Usunąć kategorię i wszystkie pytania?')) return
-    setError(null)
+  // ── Remove (cascade: obrazy → pytania → kategoria) ─────────────────────────
+  const [removingId, setRemovingId] = useState<string | null>(null)
+  const remove = async (cat: Category) => {
+    if (removingId) return
+    if (!confirm(`Usunąć kategorię "${cat.name}" wraz ze wszystkimi pytaniami?`)) return
+    setRemovingId(cat.id)
     try {
-      // 1. Pobierz pytania kategorii (potrzebne do usunięcia obrazów)
-      const { data: qs } = await supabase.from('questions').select('id,image_path').eq('category_id', id)
+      // 1. Pobierz pytania
+      const { data: qs, error: qErr } = await supabase
+        .from('questions').select('id,image_path').eq('category_id', cat.id)
+      if (qErr) throw new Error(qErr.message)
+
       if (qs && qs.length > 0) {
-        // 2. Usuń obrazy z Storage (w paczkach po 20)
-        const imagePaths = qs.map(q => q.image_path).filter((p): p is string => !!p)
-        for (let i = 0; i < imagePaths.length; i += 20) {
-          await supabase.storage.from('question-images').remove(imagePaths.slice(i, i + 20))
+        // 2. Usuń obrazy (paczki po 20)
+        const paths = qs.map(q => q.image_path).filter((p): p is string => !!p)
+        for (let i = 0; i < paths.length; i += 20) {
+          const { error: sErr } = await supabase.storage
+            .from('question-images').remove(paths.slice(i, i + 20))
+          if (sErr) console.warn('[AdminCategories] storage batch error:', sErr.message)
         }
-        // 3. Usuń pytania z bazy (w paczkach po 50)
+        // 3. Usuń pytania (paczki po 50)
         const ids = qs.map(q => q.id)
         for (let i = 0; i < ids.length; i += 50) {
-          await supabase.from('questions').delete().in('id', ids.slice(i, i + 50))
+          const { error: dErr } = await supabase.from('questions').delete().in('id', ids.slice(i, i + 50))
+          if (dErr) throw new Error('Błąd usuwania pytań: ' + dErr.message)
         }
       }
       // 4. Usuń kategorię
-      const { error: err } = await supabase.from('categories').delete().eq('id', id)
-      if (err) throw new Error(err.message)
-      await load()
-    } catch (e: any) {
-      console.warn('[Admin] Błąd usuwania kategorii:', e)
-      setError('Błąd podczas usuwania: ' + (e.message ?? 'nieznany'))
+      const { error } = await supabase.from('categories').delete().eq('id', cat.id)
+      if (error) throw new Error(error.message)
+
+      setCats(prev => prev.filter(c => c.id !== cat.id))
+      toast.success(`Usunięto: ${cat.name}`)
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : 'Błąd usuwania')
+    } finally {
+      setRemovingId(null)
     }
   }
 
@@ -89,249 +120,110 @@ export default function AdminCategories() {
     navigate('/admin')
   }
 
-  const inputStyle: React.CSSProperties = {
-    background: 'rgba(255,255,255,0.05)',
-    border: '1px solid rgba(255,255,255,0.1)',
-    borderRadius: 10,
-    padding: '10px 14px',
-    color: '#fff',
-    fontSize: '0.9rem',
-    outline: 'none',
-    fontFamily: "'Montserrat', sans-serif",
-  }
-
+  // ─────────────────────────────────────────────────────────────────────────
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: '#080808',
-        color: '#fff',
-        padding: '32px 24px',
-        maxWidth: 720,
-        margin: '0 auto',
-        fontFamily: "'Montserrat', sans-serif",
-      }}>
+    <div style={{
+      minHeight: '100vh', background: T.bg, color: T.text,
+      padding: '32px 24px', maxWidth: 720, margin: '0 auto',
+      fontFamily: "'Montserrat', sans-serif",
+    }}>
+      <ToastContainer />
+
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 32 }}>
-        <h1
-          style={{
-            fontFamily: "'Bebas Neue', sans-serif",
-            fontSize: '2.5rem',
-            letterSpacing: 8,
-            color: '#FFD700',
-            margin: 0,
-          }}>
-          Kategorie
-        </h1>
-        <button
-          onClick={logout}
-          style={{
-            background: 'none',
-            border: '1px solid rgba(239,68,68,0.3)',
-            borderRadius: 8,
-            color: 'rgba(239,68,68,0.6)',
-            padding: '6px 14px',
-            fontSize: '0.8rem',
-            cursor: 'pointer',
-            transition: 'all 0.2s',
-            letterSpacing: 1,
-          }}
-          onMouseEnter={e => {
-            e.currentTarget.style.borderColor = 'rgba(239,68,68,0.7)'
-            e.currentTarget.style.color = '#f87171'
-          }}
-          onMouseLeave={e => {
-            e.currentTarget.style.borderColor = 'rgba(239,68,68,0.3)'
-            e.currentTarget.style.color = 'rgba(239,68,68,0.6)'
-          }}>
-          Wyloguj
-        </button>
+        <h1 style={{
+          fontFamily: "'Bebas Neue', sans-serif", fontSize: '2.5rem',
+          letterSpacing: 8, color: T.goldBright, margin: 0,
+        }}>Kategorie</h1>
+        <AdminButton variant="danger" size="sm" onClick={logout}>Wyloguj</AdminButton>
       </div>
-
-      {/* Error message */}
-      {error && (
-        <div style={{
-          marginBottom: 16, padding: '10px 14px', borderRadius: 8,
-          background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)',
-          color: '#f87171', fontSize: '0.82rem',
-          display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-        }}>
-          <span>⚠️ {error}</span>
-          <button onClick={() => setError(null)} style={{ background: 'none', border: 'none', color: '#f87171', cursor: 'pointer' }}>✕</button>
-        </div>
-      )}
 
       {/* Add form */}
-      <div
-        style={{
-          display: 'flex',
-          gap: 10,
-          marginBottom: 28,
-          padding: '20px',
-          background: 'rgba(255,255,255,0.03)',
-          border: '1px solid rgba(255,255,255,0.08)',
-          borderRadius: 16,
-        }}>
-        <input
-          value={emoji}
-          onChange={e => setEmoji(e.target.value)}
-          style={{ ...inputStyle, width: 56, textAlign: 'center', fontSize: '1.3rem', padding: '8px' }}
-          placeholder="🎯"
-        />
-        <input
-          value={name}
-          onChange={e => setName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && add()}
-          placeholder="Nazwa kategorii"
-          style={{ ...inputStyle, flex: 1 }}
-        />
-        <button
-          onClick={add}
-          disabled={adding || !name.trim()}
-          style={{
-            padding: '10px 24px',
-            background: adding ? 'rgba(212,175,55,0.5)' : '#D4AF37',
-            color: '#000',
-            fontFamily: "'Bebas Neue', sans-serif",
-            fontSize: '1rem',
-            letterSpacing: 3,
-            border: 'none',
-            borderRadius: 10,
-            cursor: adding || !name.trim() ? 'default' : 'pointer',
-            transition: 'all 0.2s',
-            opacity: adding ? 0.6 : 1,
-          }}
-          onMouseEnter={e => { if (!adding) e.currentTarget.style.background = '#FFD700' }}
-          onMouseLeave={e => { if (!adding) e.currentTarget.style.background = '#D4AF37' }}>
-          {adding ? '⏳...' : '+ DODAJ'}
-        </button>
-      </div>
+      <Card padding={20} style={{ marginBottom: 28, borderRadius: 16 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <AdminInput
+            value={emoji}
+            onChange={e => setEmoji(e.target.value)}
+            style={{ width: 56, textAlign: 'center', fontSize: '1.3rem' }}
+            placeholder="🎯"
+          />
+          <AdminInput
+            value={name}
+            onChange={e => setName(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && !adding && addCat()}
+            placeholder="Nazwa kategorii"
+            style={{ flex: 1, minWidth: 180 }}
+          />
+          <AdminButton
+            onClick={addCat} loading={adding} disabled={!name.trim()}
+            variant="primary" size="lg" icon="+"
+          >DODAJ</AdminButton>
+        </div>
+      </Card>
 
       {/* List */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {cats.map(cat => (
-          <div
-            key={cat.id}
-            style={{
-              background: 'rgba(255,255,255,0.03)',
-              border: '1px solid rgba(255,255,255,0.07)',
-              borderRadius: 12,
-              padding: '14px 16px',
-              transition: 'border-color 0.2s',
-            }}>
-            {editing?.id === cat.id ? (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  value={editing.emoji}
-                  onChange={e => setEditing({ ...editing, emoji: e.target.value })}
-                  style={{ ...inputStyle, width: 50, textAlign: 'center', padding: '6px', fontSize: '1.2rem' }}
-                />
-                <input
-                  value={editing.name}
-                  onChange={e => setEditing({ ...editing, name: e.target.value })}
-                  style={{ ...inputStyle, flex: 1 }}
-                />
-                <button
-                  onClick={saveEdit}
-                  disabled={saving}
-                  style={{
-                    background: saving ? 'rgba(34,197,94,0.5)' : '#22c55e',
-                    border: 'none',
-                    borderRadius: 8,
-                    color: '#000',
-                    padding: '7px 16px',
-                    fontSize: '0.8rem',
-                    fontWeight: 700,
-                    cursor: saving ? 'default' : 'pointer',
-                    opacity: saving ? 0.6 : 1,
-                  }}>
-                  {saving ? '⏳...' : 'Zapisz'}
-                </button>
-                <button
-                  onClick={() => setEditing(null)}
-                  style={{
-                    background: 'rgba(255,255,255,0.06)',
-                    border: 'none',
-                    borderRadius: 8,
-                    color: 'rgba(255,255,255,0.4)',
-                    padding: '7px 14px',
-                    fontSize: '0.8rem',
-                    cursor: 'pointer',
-                  }}>
-                  Anuluj
-                </button>
-              </div>
-            ) : (
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-                <span style={{ fontSize: '1rem', letterSpacing: 0.5 }}>
-                  {cat.emoji} {cat.name}
-                </span>
-                <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
-                  <Link
-                    to={`/admin/categories/${cat.id}/questions`}
-                    style={{ color: '#D4AF37', fontSize: '0.8rem', textDecoration: 'none', letterSpacing: 1 }}>
-                    Pytania →
-                  </Link>
-                  <button
-                    onClick={() => setEditing(cat)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'rgba(255,255,255,0.3)',
-                      fontSize: '0.8rem',
-                      cursor: 'pointer',
-                      padding: 0,
-                      letterSpacing: 0.5,
-                    }}>
-                    Edytuj
-                  </button>
-                  <button
-                    onClick={() => remove(cat.id)}
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'rgba(239,68,68,0.5)',
-                      fontSize: '0.8rem',
-                      cursor: 'pointer',
-                      padding: 0,
-                    }}>
-                    Usuń
-                  </button>
+      {loading ? (
+        <Loading />
+      ) : cats.length === 0 ? (
+        <EmptyState icon="📂" title="Brak kategorii" description="Dodaj pierwszą powyżej." />
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {cats.map(cat => (
+            <Card key={cat.id} padding="14px 16px">
+              {editing?.id === cat.id ? (
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                  <AdminInput
+                    value={editing.emoji}
+                    onChange={e => setEditing({ ...editing, emoji: e.target.value })}
+                    style={{ width: 50, textAlign: 'center', fontSize: '1.2rem' }}
+                  />
+                  <AdminInput
+                    value={editing.name}
+                    onChange={e => setEditing({ ...editing, name: e.target.value })}
+                    onKeyDown={e => e.key === 'Enter' && !saving && saveEdit()}
+                    style={{ flex: 1, minWidth: 160 }}
+                    autoFocus
+                  />
+                  <AdminButton onClick={saveEdit} loading={saving} variant="success" size="sm">
+                    Zapisz
+                  </AdminButton>
+                  <AdminButton onClick={() => setEditing(null)} disabled={saving} variant="ghost" size="sm">
+                    Anuluj
+                  </AdminButton>
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
-
-      {cats.length === 0 && (
-        <div
-          style={{
-            textAlign: 'center',
-            color: 'rgba(255,255,255,0.18)',
-            padding: '60px 0',
-            fontSize: '0.9rem',
-            letterSpacing: 2,
-          }}>
-          Brak kategorii. Dodaj pierwszą powyżej.
+              ) : (
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+                  <span style={{ fontSize: '1rem' }}>
+                    {cat.emoji} {cat.name}
+                  </span>
+                  <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+                    <Link
+                      to={`/admin/categories/${cat.id}/questions`}
+                      style={{ color: T.gold, fontSize: '0.82rem', textDecoration: 'none', letterSpacing: 1 }}
+                    >Pytania →</Link>
+                    <AdminButton onClick={() => setEditing(cat)} variant="ghost" size="sm">Edytuj</AdminButton>
+                    <AdminButton
+                      onClick={() => remove(cat)}
+                      loading={removingId === cat.id}
+                      disabled={!!removingId && removingId !== cat.id}
+                      variant="danger" size="sm"
+                    >Usuń</AdminButton>
+                  </div>
+                </div>
+              )}
+            </Card>
+          ))}
         </div>
       )}
 
       <Link
         to="/admin/config"
         style={{
-          display: 'inline-block',
-          marginTop: 36,
-          color: 'rgba(255,255,255,0.25)',
-          fontSize: '0.8rem',
-          textDecoration: 'none',
-          letterSpacing: 1,
-          transition: 'color 0.2s',
+          display: 'inline-block', marginTop: 36,
+          color: T.textDim3, fontSize: '0.82rem',
+          textDecoration: 'none', letterSpacing: 1,
         }}
-        onMouseEnter={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.6)')}
-        onMouseLeave={e => (e.currentTarget.style.color = 'rgba(255,255,255,0.25)')}>
-        ⚙️ Edytuj konfigurację gry
-      </Link>
+      >⚙️ Edytuj konfigurację gry</Link>
     </div>
   )
 }
