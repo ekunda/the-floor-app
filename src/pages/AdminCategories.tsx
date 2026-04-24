@@ -34,7 +34,27 @@ export default function AdminCategories() {
 
   const remove = async (id: string) => {
     if (!confirm('Usunąć kategorię i wszystkie pytania?')) return
-    await supabase.from('categories').delete().eq('id', id)
+    try {
+      // 1. Pobierz pytania kategorii (potrzebne do usunięcia obrazów)
+      const { data: qs } = await supabase.from('questions').select('id,image_path').eq('category_id', id)
+      if (qs && qs.length > 0) {
+        // 2. Usuń obrazy z Storage (w paczkach po 20)
+        const imagePaths = qs.map(q => q.image_path).filter((p): p is string => !!p)
+        for (let i = 0; i < imagePaths.length; i += 20) {
+          await supabase.storage.from('question-images').remove(imagePaths.slice(i, i + 20))
+        }
+        // 3. Usuń pytania z bazy (w paczkach po 50)
+        const ids = qs.map(q => q.id)
+        for (let i = 0; i < ids.length; i += 50) {
+          await supabase.from('questions').delete().in('id', ids.slice(i, i + 50))
+        }
+      }
+      // 4. Usuń kategorię
+      await supabase.from('categories').delete().eq('id', id)
+    } catch (e: any) {
+      console.warn('[Admin] Błąd usuwania kategorii:', e)
+      alert('Błąd podczas usuwania: ' + (e.message ?? 'nieznany'))
+    }
     load()
   }
 

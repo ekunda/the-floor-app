@@ -80,6 +80,10 @@ export default function AdminQuestions() {
   const [page,     setPage]     = useState(1)
   const [pageSize, setPageSize] = useState(24)
 
+  // Bulk selection
+  const [selected,     setSelected]     = useState<Set<string>>(new Set())
+  const [bulkDeleting, setBulkDeleting] = useState(false)
+
   const fileRef     = useRef<HTMLInputElement>(null)
   const editFileRef = useRef<HTMLInputElement>(null)
   const searchRef   = useRef<HTMLInputElement>(null)
@@ -101,17 +105,27 @@ export default function AdminQuestions() {
 
   useEffect(() => { if (categoryId) load() }, [categoryId])
 
-  // Keyboard shortcut Ctrl+F → focus search
+  // Keyboard shortcuts: Ctrl+F → focus search, Ctrl+A → toggle select all, Escape → clear selection
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault()
         searchRef.current?.focus()
       }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        e.preventDefault()
+        const pageIds = paginated.map(q => q.id)
+        const allSelected = pageIds.every(id => selected.has(id))
+        if (allSelected) { setSelected(new Set()) }
+        else { setSelected(new Set([...selected, ...pageIds])) }
+      }
+      if (e.key === 'Escape' && selected.size > 0) {
+        setSelected(new Set())
+      }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [])
+  }, [paginated, selected])
 
   // ── Derived: filtered + sorted + paginated ────────────────────────────────
   const processed = useMemo(() => {
@@ -235,6 +249,59 @@ export default function AdminQuestions() {
 
   const clearSearch = () => { setSearch(''); setFilter('all') }
 
+  // ── Bulk selection helpers ──────────────────────────────────────────────
+  const toggleSelect = (id: string) => {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
+  const selectAllPage = () => {
+    const pageIds = paginated.map(q => q.id)
+    const allSelected = pageIds.length > 0 && pageIds.every(id => selected.has(id))
+    if (allSelected) {
+      setSelected(prev => { const next = new Set(prev); pageIds.forEach(id => next.delete(id)); return next })
+    } else {
+      setSelected(prev => new Set([...prev, ...pageIds]))
+    }
+  }
+  const selectAll = () => {
+    const allIds = processed.map(q => q.id)
+    const allSelected = allIds.length > 0 && allIds.every(id => selected.has(id))
+    setSelected(allSelected ? new Set() : new Set(allIds))
+  }
+  const clearSelection = () => setSelected(new Set())
+
+  const bulkRemove = async () => {
+    if (selected.size === 0) return
+    const count = selected.size
+    if (!confirm(`Usunąć ${count} ${pluralPytan(count)}? Tej operacji nie można cofnąć.`)) return
+    setBulkDeleting(true)
+    try {
+      // Zbierz ścieżki obrazów do usunięcia
+      const toDelete = questions.filter(q => selected.has(q.id))
+      const imagePaths = toDelete.map(q => q.image_path).filter((p): p is string => !!p)
+      // Usuń obrazy z storage (w paczkach po 20)
+      for (let i = 0; i < imagePaths.length; i += 20) {
+        const batch = imagePaths.slice(i, i + 20)
+        await supabase.storage.from('question-images').remove(batch)
+      }
+      // Usuń pytania z bazy (w paczkach po 50 IDs)
+      const ids = [...selected]
+      for (let i = 0; i < ids.length; i += 50) {
+        const batch = ids.slice(i, i + 50)
+        await supabase.from('questions').delete().in('id', batch)
+      }
+      setSelected(new Set())
+      await load()
+    } catch (e: any) {
+      setUploadError(e.message ?? 'Błąd masowego usuwania')
+    } finally {
+      setBulkDeleting(false)
+    }
+  }
+
   // ── Active filter chips ───────────────────────────────────────────────────
   const activeFilters: { label: string; clear: () => void }[] = []
   if (search)        activeFilters.push({ label: `🔍 "${search}"`,         clear: () => setSearch('') })
@@ -245,6 +312,7 @@ export default function AdminQuestions() {
   // ─────────────────────────────────────────────────────────────────────────
   return (
     <div style={{ minHeight: '100vh', background: '#080808', color: '#fff', fontFamily: "'Montserrat', sans-serif" }}>
+      <style>{`@keyframes fadeInUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}`}</style>
 
       {/* ── Header ── */}
       <div style={{
@@ -422,15 +490,67 @@ export default function AdminQuestions() {
             </div>
           )}
 
-          {/* Stat bar */}
-          <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem' }}>
-            {processed.length === questions.length
-              ? `${questions.length} ${pluralPytan(questions.length)}`
-              : `${processed.length} z ${questions.length} ${pluralPytan(questions.length)}`
-            }
-            {processed.length > 0 && ` · strona ${safePage} z ${totalPages}`}
+          {/* Stat bar + bulk select controls */}
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+            <div style={{ color: 'rgba(255,255,255,0.3)', fontSize: '0.75rem' }}>
+              {processed.length === questions.length
+                ? `${questions.length} ${pluralPytan(questions.length)}`
+                : `${processed.length} z ${questions.length} ${pluralPytan(questions.length)}`
+              }
+              {processed.length > 0 && ` · strona ${safePage} z ${totalPages}`}
+            </div>
+            {/* Bulk selection controls */}
+            {processed.length > 0 && (
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap' }}>
+                <button onClick={selectAllPage} style={{
+                  padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: '0.72rem',
+                  background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                  color: 'rgba(255,255,255,0.45)', transition: 'all 0.15s',
+                }}>
+                  {paginated.length > 0 && paginated.every(q => selected.has(q.id)) ? '☑ Odznacz stronę' : '☐ Zaznacz stronę'}
+                </button>
+                {totalPages > 1 && (
+                  <button onClick={selectAll} style={{
+                    padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: '0.72rem',
+                    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'rgba(255,255,255,0.45)', transition: 'all 0.15s',
+                  }}>
+                    {processed.every(q => selected.has(q.id)) ? '☑ Odznacz wszystko' : `☐ Zaznacz wszystko (${processed.length})`}
+                  </button>
+                )}
+                {selected.size > 0 && (
+                  <button onClick={clearSelection} style={{
+                    padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: '0.72rem',
+                    background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)',
+                    color: 'rgba(255,255,255,0.45)', transition: 'all 0.15s',
+                  }}>✕ Wyczyść ({selected.size})</button>
+                )}
+              </div>
+            )}
           </div>
         </div>
+
+        {/* ── BULK ACTION BAR ── */}
+        {selected.size > 0 && (
+          <div style={{
+            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            padding: '10px 16px', marginBottom: 14,
+            background: 'rgba(239,68,68,0.06)', border: '1px solid rgba(239,68,68,0.2)',
+            borderRadius: 10, animation: 'fadeInUp 0.2s ease',
+          }}>
+            <span style={{ color: 'rgba(255,255,255,0.6)', fontSize: '0.82rem' }}>
+              Zaznaczono <strong style={{ color: '#D4AF37' }}>{selected.size}</strong> {pluralPytan(selected.size)}
+            </span>
+            <button onClick={bulkRemove} disabled={bulkDeleting} style={{
+              padding: '7px 18px', borderRadius: 8, cursor: bulkDeleting ? 'default' : 'pointer',
+              background: bulkDeleting ? 'rgba(239,68,68,0.08)' : 'rgba(239,68,68,0.15)',
+              border: '1px solid rgba(239,68,68,0.4)', color: bulkDeleting ? 'rgba(239,68,68,0.4)' : '#f87171',
+              fontFamily: "'Bebas Neue', sans-serif", fontSize: '0.9rem', letterSpacing: 2, transition: 'all 0.15s',
+            }}>
+              {bulkDeleting ? '⏳ Usuwanie…' : `🗑 USUŃ ${selected.size}`}
+            </button>
+          </div>
+        )}
 
         {/* ── SIATKA PYTAŃ ── */}
         {loading ? (
@@ -452,6 +572,7 @@ export default function AdminQuestions() {
             {paginated.map(q => {
               const url = imageUrl(q.image_path)
               const isEditing = editingId === q.id
+              const isSelected = selected.has(q.id)
               // Highlight search matches
               const highlight = (text: string) => {
                 if (!search.trim()) return text
@@ -470,10 +591,27 @@ export default function AdminQuestions() {
 
               return (
                 <div key={q.id} style={{
-                  background: 'rgba(255,255,255,0.03)',
-                  border: isEditing ? '1px solid rgba(212,175,55,0.3)' : '1px solid rgba(255,255,255,0.07)',
-                  borderRadius: 10, overflow: 'hidden', transition: 'border-color 0.2s',
+                  position: 'relative',
+                  background: isSelected ? 'rgba(239,68,68,0.04)' : 'rgba(255,255,255,0.03)',
+                  border: isEditing ? '1px solid rgba(212,175,55,0.3)' : isSelected ? '1px solid rgba(239,68,68,0.3)' : '1px solid rgba(255,255,255,0.07)',
+                  borderRadius: 10, overflow: 'hidden', transition: 'all 0.15s',
                 }}>
+                  {/* Checkbox */}
+                  {!isEditing && (
+                    <button
+                      onClick={() => toggleSelect(q.id)}
+                      title={isSelected ? 'Odznacz' : 'Zaznacz'}
+                      style={{
+                        position: 'absolute', top: 6, left: 6, zIndex: 5,
+                        width: 24, height: 24, borderRadius: 5, cursor: 'pointer',
+                        background: isSelected ? 'rgba(239,68,68,0.85)' : 'rgba(0,0,0,0.55)',
+                        border: `1.5px solid ${isSelected ? 'rgba(239,68,68,0.9)' : 'rgba(255,255,255,0.3)'}`,
+                        color: isSelected ? '#fff' : 'rgba(255,255,255,0.4)',
+                        fontSize: '0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        transition: 'all 0.15s', backdropFilter: 'blur(4px)',
+                      }}
+                    >{isSelected ? '✓' : ''}</button>
+                  )}
                   {/* Zdjęcie */}
                   {isEditing && editFile ? (
                     <img src={URL.createObjectURL(editFile)} alt={q.answer} style={{ width: '100%', height: 140, objectFit: 'cover' }} />
