@@ -151,7 +151,7 @@ export default function Dashboard() {
       }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <button onClick={() => navigate('/')} style={{ background: 'none', border: 'none', color: 'rgba(255,255,255,0.3)', cursor: 'pointer', fontSize: '1rem' }}>←</button>
-          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 5, color: '#D4AF37' }}>THE REFLEKTOR</span>
+          <span style={{ fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem', letterSpacing: 5, color: '#D4AF37' }}>THE FLOOR</span>
         </div>
 
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>

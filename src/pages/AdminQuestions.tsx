@@ -105,28 +105,6 @@ export default function AdminQuestions() {
 
   useEffect(() => { if (categoryId) load() }, [categoryId])
 
-  // Keyboard shortcuts: Ctrl+F → focus search, Ctrl+A → toggle select all, Escape → clear selection
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
-        e.preventDefault()
-        searchRef.current?.focus()
-      }
-      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
-        e.preventDefault()
-        const pageIds = paginated.map(q => q.id)
-        const allSelected = pageIds.every(id => selected.has(id))
-        if (allSelected) { setSelected(new Set()) }
-        else { setSelected(new Set([...selected, ...pageIds])) }
-      }
-      if (e.key === 'Escape' && selected.size > 0) {
-        setSelected(new Set())
-      }
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [paginated, selected])
-
   // ── Derived: filtered + sorted + paginated ────────────────────────────────
   const processed = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -164,6 +142,28 @@ export default function AdminQuestions() {
   const totalPages = Math.max(1, Math.ceil(processed.length / pageSize))
   const safePage   = Math.min(page, totalPages)
   const paginated  = processed.slice((safePage - 1) * pageSize, safePage * pageSize)
+
+  // Keyboard shortcuts: Ctrl+F → focus search, Ctrl+A → toggle select all, Escape → clear selection
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault()
+        searchRef.current?.focus()
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 'a' && !['INPUT','TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        e.preventDefault()
+        const pageIds = paginated.map(q => q.id)
+        const allSelected = pageIds.every(id => selected.has(id))
+        if (allSelected) { setSelected(new Set()) }
+        else { setSelected(new Set([...selected, ...pageIds])) }
+      }
+      if (e.key === 'Escape' && selected.size > 0) {
+        setSelected(new Set())
+      }
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [paginated, selected])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   const imageUrl = (path: string | null) =>

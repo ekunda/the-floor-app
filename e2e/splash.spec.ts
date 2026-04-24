@@ -16,7 +16,7 @@ test.describe('Splash screen', () => {
   })
 
   test('wyświetla logo i przyciski akcji', async ({ page }) => {
-    await expect(page.getByText('THE REFLEKTOR')).toBeVisible()
+    await expect(page.getByText('THE FLOOR')).toBeVisible()
     await expect(page.getByText('ROZPOCZNIJ')).toBeVisible()
     await expect(page.getByText('MULTIPLAYER')).toBeVisible()
   })

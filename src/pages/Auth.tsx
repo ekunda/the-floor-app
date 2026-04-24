@@ -119,7 +119,7 @@ export default function Auth() {
             fontFamily: "'Bebas Neue', sans-serif", fontSize: '2rem', letterSpacing: 10,
             background: 'linear-gradient(135deg, #FFD700, #C0C0C0)',
             WebkitBackgroundClip: 'text', backgroundClip: 'text', color: 'transparent',
-          }}>THE REFLEKTOR</div>
+          }}>THE FLOOR</div>
           <button
             type="button"
             onClick={() => navigate('/')}

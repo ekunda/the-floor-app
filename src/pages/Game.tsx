@@ -102,7 +102,7 @@ export default function Game() {
 				<div style={styles.gridBg} />
 				<div style={styles.vignette} />
 				<div style={styles.splashContent}>
-					<div style={styles.splashLogo}>THE REFLEKTOR</div>
+					<div style={styles.splashLogo}>THE FLOOR</div>
 					
 					<button className="splash-btn" onClick={handleStart} style={styles.splashBtn}>
 						▶&nbsp; ROZPOCZNIJ
@@ -148,7 +148,7 @@ export default function Game() {
 		return (
 			<div style={{ ...styles.fullscreen, flexDirection: 'column', gap: 24 }}>
 				<style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-				<div style={styles.loadingLogo}>THE REFLECTOR</div>
+				<div style={styles.loadingLogo}>THE FLOOR</div>
 				<div style={styles.spinner} />
 				<div
 					style={{
@@ -168,7 +168,7 @@ export default function Game() {
 		return (
 			<div style={{ ...styles.fullscreen, flexDirection: 'column', gap: 28 }}>
 				<style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-				<div style={styles.loadingLogo}>THE REFLECTOR</div>
+				<div style={styles.loadingLogo}>THE FLOOR</div>
 				<div style={styles.spinner} />
 			</div>
 		)
@@ -182,7 +182,7 @@ export default function Game() {
 
 			{/* Header */}
 			<header style={styles.header}>
-				<div style={styles.headerLogo}>THE REFLECTOR</div>
+				<div style={styles.headerLogo}>THE FLOOR</div>
 				
 			</header>
 
