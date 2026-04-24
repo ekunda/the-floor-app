@@ -765,12 +765,24 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
 
       {config.RANDOM_TILES === 0 && cats.length > 0 && (
         <div style={{ marginTop: 14 }}>
-          <div style={{ color: T.textDim2, fontSize: '0.72rem', letterSpacing: 1, marginBottom: 8 }}>PRZYPISANIE KATEGORII</div>
+          <div style={{
+            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+            marginBottom: 8,
+          }}>
+            <div style={{ color: T.textDim2, fontSize: '0.72rem', letterSpacing: 1 }}>
+              PRZYPISANIE KATEGORII
+            </div>
+            <div style={{ color: T.textDim3, fontSize: '0.7rem', fontFamily: 'monospace' }}>
+              {preset.cols}×{preset.rows} = {totalTiles} pól
+            </div>
+          </div>
+          {/* minmax(0,1fr) — bez tego <select> wymusza szerokość najszerszej opcji
+              → siatka rozpycha się poza kontener i kafelki wyglądają na brakujące */}
           <div style={{
             display: 'grid', gap: 6, marginBottom: 10,
-            gridTemplateColumns: `repeat(${preset.cols},1fr)`,
+            gridTemplateColumns: `repeat(${preset.cols}, minmax(0, 1fr))`,
           }}>
-            {Array.from({ length: totalTiles }).map((_, i) => (
+            {Array.from({ length: totalTiles }, (_, i) => (
               <AdminSelect
                 key={i} size="sm"
                 value={tileCategories[i] || ''}
@@ -778,7 +790,7 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
                 style={{
                   background: tileCategories[i] ? 'rgba(212,175,55,0.1)' : T.surface,
                   border: `1px solid ${tileCategories[i] ? `${T.gold}66` : T.border}`,
-                  fontSize: '0.68rem', width: '100%',
+                  fontSize: '0.68rem', width: '100%', minWidth: 0, boxSizing: 'border-box',
                 }}
                 options={[
                   { value: '', label: 'Auto' },
