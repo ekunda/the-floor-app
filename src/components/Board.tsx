@@ -190,13 +190,13 @@ export default function Board() {
         if (isPlayed) {
           ctx.fillStyle = 'rgba(0,0,0,0.55)'
           ctx.fillRect(px, py, S, S)
-          // Kłódka w prawym górnym rogu — sygnalizuje "rozegrane"
-          const lockSize = Math.max(14, Math.round(S * 0.16))
-          ctx.font          = `${lockSize}px serif`
-          ctx.textAlign     = 'right'
-          ctx.textBaseline  = 'top'
-          ctx.fillStyle     = 'rgba(255,255,255,0.55)'
-          ctx.fillText('🔒', px + S - 6, py + 4)
+          // Medal w prawym górnym rogu — pokazuje, który gracz wygrał rundę:
+          //   🥇 = gracz 1 (gold), 🥈 = gracz 2 (silver)
+          const medal     = tile.owner === 'gold' ? '🥇' : '🥈'
+          const medalSize = Math.max(18, Math.round(S * 0.20))
+          // Cache jako Canvas (jak emoji kategorii) — szybkie i ostre niezależnie od skali
+          const medalCanvas = getEmojiCanvas(medal, medalSize)
+          ctx.drawImage(medalCanvas, px + S - medalSize - 4, py + 4)
         }
       }
 
