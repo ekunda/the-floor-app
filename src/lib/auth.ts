@@ -25,11 +25,11 @@ export async function registerUser(
   username: string,
   avatar: string = '🎮',
 ): Promise<RegisterResult> {
-  // 1. Sprawdź unikalność nicku
+  // 1. Sprawdź unikalność nicku (case-insensitive — DB ma UNIQUE na lower(username))
   const { data: existing } = await supabase
     .from('profiles')
     .select('id')
-    .eq('username', username.trim())
+    .ilike('username', username.trim())
     .maybeSingle()
 
   if (existing) {
@@ -134,12 +134,15 @@ export async function updateUserProfile(
   userId: string,
   updates: Partial<Pick<UserProfile, 'username' | 'avatar'>>,
 ): Promise<UpdateProfileResult> {
-  // Sprawdź unikalność nicku jeśli zmieniony
+  // Best-effort sprawdzenie unikalności (case-insensitive — DB ma UNIQUE na lower(username)).
+  // Pre-check redukuje liczbę nieudanych UPDATE-ów, ale nie eliminuje race —
+  // dlatego niżej łapiemy też 23505 z bazy.
   if (updates.username) {
+    const trimmed = updates.username.trim()
     const { data: existing } = await supabase
       .from('profiles')
       .select('id')
-      .eq('username', updates.username.trim())
+      .ilike('username', trimmed)
       .neq('id', userId)
       .maybeSingle()
 
@@ -153,7 +156,13 @@ export async function updateUserProfile(
     .update(updates)
     .eq('id', userId)
 
-  if (error) return { success: false, error: error.message }
+  if (error) {
+    const code = (error as { code?: string }).code
+    if (code === '23505') {
+      return { success: false, error: 'Ta nazwa gracza jest już zajęta.' }
+    }
+    return { success: false, error: error.message }
+  }
   return { success: true }
 }
 

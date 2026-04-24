@@ -537,15 +537,13 @@ function CategoriesSection({ cats, catsLoading, reload }: {
     if (!confirm(`Usunąć kategorię "${cat.name}" wraz ze wszystkimi pytaniami?`)) return
     setRemovingId(cat.id)
     try {
-      const { data: qs } = await supabase.from('questions').select('id,image_path').eq('category_id', cat.id)
+      // Storage nie kaskaduje — usuwamy ręcznie. Wiersze questions znikną
+      // automatycznie dzięki ON DELETE CASCADE na questions.category_id.
+      const { data: qs } = await supabase.from('questions').select('image_path').eq('category_id', cat.id)
       if (qs && qs.length > 0) {
         const paths = qs.map(q => q.image_path).filter((p): p is string => !!p)
         for (let i = 0; i < paths.length; i += 20) {
           await supabase.storage.from('question-images').remove(paths.slice(i, i + 20))
-        }
-        const ids = qs.map(q => q.id)
-        for (let i = 0; i < ids.length; i += 50) {
-          await supabase.from('questions').delete().in('id', ids.slice(i, i + 50))
         }
       }
       const { error } = await supabase.from('categories').delete().eq('id', cat.id)

@@ -82,27 +82,22 @@ export default function AdminCategories() {
     if (!confirm(`Usunąć kategorię "${cat.name}" wraz ze wszystkimi pytaniami?`)) return
     setRemovingId(cat.id)
     try {
-      // 1. Pobierz pytania
+      // 1. Pobierz ścieżki obrazów PRZED usunięciem kategorii (Storage nie kaskaduje)
       const { data: qs, error: qErr } = await supabase
-        .from('questions').select('id,image_path').eq('category_id', cat.id)
+        .from('questions').select('image_path').eq('category_id', cat.id)
       if (qErr) throw new Error(qErr.message)
 
+      // 2. Usuń obrazy ze Storage (paczki po 20). Pytania w DB zostaną usunięte
+      //    automatycznie przez ON DELETE CASCADE na questions.category_id.
       if (qs && qs.length > 0) {
-        // 2. Usuń obrazy (paczki po 20)
         const paths = qs.map(q => q.image_path).filter((p): p is string => !!p)
         for (let i = 0; i < paths.length; i += 20) {
           const { error: sErr } = await supabase.storage
             .from('question-images').remove(paths.slice(i, i + 20))
           if (sErr) console.warn('[AdminCategories] storage batch error:', sErr.message)
         }
-        // 3. Usuń pytania (paczki po 50)
-        const ids = qs.map(q => q.id)
-        for (let i = 0; i < ids.length; i += 50) {
-          const { error: dErr } = await supabase.from('questions').delete().in('id', ids.slice(i, i + 50))
-          if (dErr) throw new Error('Błąd usuwania pytań: ' + dErr.message)
-        }
       }
-      // 4. Usuń kategorię
+      // 3. Usuń kategorię — FK CASCADE usunie też wiersze questions
       const { error } = await supabase.from('categories').delete().eq('id', cat.id)
       if (error) throw new Error(error.message)
 

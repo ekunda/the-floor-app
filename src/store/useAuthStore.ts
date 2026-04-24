@@ -262,11 +262,21 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       }
     }
 
+    // Pre-check (best-effort, case-insensitive zgodnie z UNIQUE na lower(username))
+    const { data: existing } = await supabase.from('profiles')
+      .select('id').ilike('username', trimmed).neq('id', user.id).maybeSingle()
+    if (existing) { set({ error: 'Ta nazwa gracza jest już zajęta' }); return false }
+
     const now = new Date().toISOString()
     const { error } = await supabase.from('profiles')
       .update({ username: trimmed, last_username_change: now, updated_at: now })
       .eq('id', user.id)
-    if (error) { set({ error: error.message }); return false }
+    if (error) {
+      const code = (error as { code?: string }).code
+      const msg = code === '23505' ? 'Ta nazwa gracza jest już zajęta' : error.message
+      set({ error: msg })
+      return false
+    }
     set({ user: { ...user, username: trimmed, last_username_change: now } })
     return true
   },

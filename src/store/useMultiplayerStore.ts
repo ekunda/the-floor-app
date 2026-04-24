@@ -708,23 +708,36 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
       await ensureProfile(playerId, playerName, effectivePlayerAvatar())
 
+      const cfg = useConfigStore.getState().config
+
+      // Retry-on-conflict: UNIQUE constraint na game_rooms.code wymusza idempotentność.
+      // Optymistyczny INSERT — przy 23505 (unique_violation) generujemy nowy kod
+      // i próbujemy ponownie. Brak SELECT-then-INSERT race window.
       let code = generateCode()
-      for (let i = 0; i < 8; i++) {
-        const { data: ex } = await supabase.from('game_rooms').select('id').eq('code', code).limit(1).maybeSingle()
-        if (!ex) break
-        code = generateCode()
+      let room: { id: string } | null = null
+      let lastErr: { code?: string; message?: string } | null = null
+      for (let attempt = 0; attempt < 6; attempt++) {
+        const { data, error } = await supabase.from('game_rooms')
+          .insert({
+            code, host_id: playerId, guest_id: null, status: 'waiting',
+            game_state: gs, host_score: 0, guest_score: 0, current_round: 0,
+            config: { cols, rows, duelTime: cfg.DUEL_TIME, passPenalty: cfg.PASS_PENALTY },
+          })
+          .select().single()
+        if (!error && data) { room = data as { id: string }; break }
+        lastErr = error as { code?: string; message?: string } | null
+        if (lastErr && lastErr.code === '23505') {
+          code = generateCode()
+          continue
+        }
+        break
       }
 
-      const cfg = useConfigStore.getState().config
-      const { data: room, error } = await supabase.from('game_rooms')
-        .insert({
-          code, host_id: playerId, guest_id: null, status: 'waiting',
-          game_state: gs, host_score: 0, guest_score: 0, current_round: 0,
-          config: { cols, rows, duelTime: cfg.DUEL_TIME, passPenalty: cfg.PASS_PENALTY },
-        })
-        .select().single()
-
-      if (error || !room) { set({ status: 'idle', error: 'Nie udało się utworzyć pokoju' }); return null }
+      if (!room) {
+        console.warn('[MP] createRoom failed:', lastErr)
+        set({ status: 'idle', error: 'Nie udało się utworzyć pokoju' })
+        return null
+      }
 
       const r = room as { id: string }
       set({
