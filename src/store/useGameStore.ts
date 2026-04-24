@@ -157,12 +157,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (cats) setCached(CACHE_KEY_CATS, cats)
 
     // ── Guard: preset could have changed in admin between sessions ────────────
-    // Old tiles (np. 8) + new preset (6×2 = 12) = czarne puste pola w canvasie.
+    // Dwa rodzaje niezgodności dają czarne, puste kafelki w canvasie:
+    //   1) różna LICZBA pól (np. 8 → 12): brakujące sloty nie są rysowane
+    //   2) ta sama liczba, ale inne wymiary (4×3=12 → 6×2=12): część tiles
+    //      ma x/y poza nowym canvasem → rysują się za jego granicą
     // Odrzucamy taki zapis i startujemy świeżą grę z poprawnym rozmiarem.
     const cfg           = useConfigStore.getState().config
     const preset        = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
     const expectedTotal = preset.cols * preset.rows
-    if (saved.tiles.length !== expectedTotal) {
+    const shapeMismatch =
+      saved.tiles.length !== expectedTotal ||
+      saved.tiles.some(t => t.x >= preset.cols || t.y >= preset.rows || t.x < 0 || t.y < 0)
+    if (shapeMismatch) {
       clearGameState()
       set({ categories, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
       get().newGame()
