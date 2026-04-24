@@ -126,18 +126,24 @@ export default function MultiplayerLobby() {
 
   useEffect(() => {
     searchPlayers('')
-    // Poll every 10s as safety net
-    const iv = setInterval(() => searchPlayers(searchQRef.current), 10_000)
+    // Poll every 8s — sufficient for lobby player list, replaces
+    // expensive postgres_changes on entire profiles table
+    const iv = setInterval(() => searchPlayers(searchQRef.current), 8_000)
 
-    // Realtime subscription — instant updates when any profile changes status/last_seen
-    const rt = supabase
-      .channel('profiles-presence')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'profiles' }, () => {
+    // Presence channel — lightweight, no WAL overhead
+    // Players joining/leaving lobby trigger instant re-fetch
+    const presence = supabase.channel('lobby-presence')
+    presence
+      .on('presence', { event: 'sync' }, () => {
         searchPlayers(searchQRef.current)
       })
-      .subscribe()
+      .subscribe(async (status) => {
+        if (status === 'SUBSCRIBED' && user?.id) {
+          await presence.track({ user_id: user.id, username: user.username })
+        }
+      })
 
-    return () => { clearInterval(iv); rt.unsubscribe() }
+    return () => { clearInterval(iv); presence.unsubscribe() }
   }, [user?.id])
 
   // Debounced search on input change

@@ -744,7 +744,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
       try {
         const { data: room, error } = await supabase
-          .from('game_rooms').select('*').eq('code', code.toUpperCase()).in('status', ['waiting']).maybeSingle()
+          .from('game_rooms').select('id,code,host_id,game_state,host_score,guest_score,config,status').eq('code', code.toUpperCase()).in('status', ['waiting']).maybeSingle()
 
         if (error || !room) { set({ status: 'idle', error: 'Nie znaleziono pokoju o podanym kodzie.' }); return false }
 

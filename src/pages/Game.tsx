@@ -42,8 +42,7 @@ export default function Game() {
 	const handleStart = async () => {
 		SoundEngine.startBg('bgMusic', 0.3)
 		setAppState('loading')
-		await fetchConfig()
-		await loadCategories()
+		await Promise.all([fetchConfig(), loadCategories()])
 		setAppState('game')
 	}
 

@@ -152,7 +152,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 			}
 
 			// 2. Supabase — revalidate (only when cache is stale or missing)
-			const { data } = await supabase.from('config').select('*')
+			const { data } = await supabase.from('config').select('key,value')
 			if (data && data.length > 0) {
 				const merged = { ...DEFAULTS }
 				let tileCats: string[] = []

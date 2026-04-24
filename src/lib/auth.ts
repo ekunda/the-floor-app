@@ -117,7 +117,7 @@ export async function logoutUser(): Promise<void> {
 export async function fetchUserProfile(userId: string): Promise<UserProfile | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('*')
+    .select('id,username,avatar,avatar_url,xp,wins,losses,win_streak,best_streak,status,last_username_change,created_at')
     .eq('id', userId)
     .single()
 

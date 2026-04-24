@@ -58,7 +58,7 @@ export const AVATAR_OPTIONS = AVATARS
 async function loadProfile(userId: string): Promise<UserProfile | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('*')
+    .select('id,username,avatar,avatar_url,xp,wins,losses,win_streak,best_streak,status,last_username_change,created_at')
     .eq('id', userId)
     .maybeSingle()
   if (error || !data) return null
@@ -106,12 +106,16 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
     }
     set({ loading: false })
 
-    // ── Heartbeat: aktualizuje last_seen co 30s (threshold filtra = 2 min) ──
+    // ── Heartbeat: aktualizuje last_seen co 60s (threshold filtra = 2 min) ──
+    // Próbuje użyć RPC heartbeat() (1 hop zamiast REST update), fallback do .update()
     setInterval(() => {
       const { user } = get()
       if (!user) return
-      supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id)
-    }, 30_000)
+      supabase.rpc('heartbeat').then(({ error }) => {
+        // Fallback jeśli RPC nie istnieje (np. migracja nie uruchomiona)
+        if (error) supabase.from('profiles').update({ last_seen: new Date().toISOString() }).eq('id', user.id)
+      })
+    }, 60_000)
 
     // ── beforeunload: ustaw offline gdy użytkownik zamknie kartę ──────────
     // keepalive: true gwarantuje wysłanie żądania mimo zamknięcia strony

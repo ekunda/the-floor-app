@@ -87,7 +87,7 @@ export default function Lobby() {
     // Pobierz pokój
     const { data: room, error: fetchErr } = await supabase
       .from('game_rooms')
-      .select('*')
+      .select('id,code,host_id,guest_id,status,config')
       .eq('code', code)
       .maybeSingle()
 

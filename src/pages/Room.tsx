@@ -63,7 +63,7 @@ export default function Room() {
 
     const { data, error: err } = await supabase
       .from('game_rooms')
-      .select('*')
+      .select('id,code,host_id,guest_id,status,config')
       .eq('code', code)
       .maybeSingle()
 
@@ -116,7 +116,7 @@ export default function Room() {
   // ── Polling: sprawdź aktualizacje DB ────────────────────────
   const pollRoom = async (roomId: string) => {
     const { data } = await supabase
-      .from('game_rooms').select('*').eq('id', roomId).maybeSingle()
+      .from('game_rooms').select('id,code,host_id,guest_id,status,config').eq('id', roomId).maybeSingle()
     if (!data) return
 
     const r = data as RoomData

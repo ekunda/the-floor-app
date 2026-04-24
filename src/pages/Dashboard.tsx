@@ -69,7 +69,7 @@ export default function Dashboard() {
     setHistoryLoading(true)
     const { data } = await supabase
       .from('game_history')
-      .select('*')
+      .select('id,winner_id,loser_id,winner_score,loser_score,rounds_total,duration_sec,is_draw,played_at')
       .or(`winner_id.eq.${profile.id},loser_id.eq.${profile.id}`)
       .order('played_at', { ascending: false })
       .limit(20)

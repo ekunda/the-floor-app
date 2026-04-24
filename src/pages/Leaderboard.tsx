@@ -48,7 +48,7 @@ export default function Leaderboard() {
     if (tab === 'global') {
       const { data: rows } = await supabase
         .from('leaderboard')
-        .select('*')
+        .select('id,username,avatar,xp,wins,losses,win_streak,best_streak,win_rate,rank')
         .limit(50)
       setData((rows ?? []) as LeaderboardEntry[])
 
@@ -61,7 +61,7 @@ export default function Leaderboard() {
           // Fetch own rank if not in top 50
           const { data: ownData } = await supabase
             .from('leaderboard')
-            .select('*')
+            .select('id,username,avatar,xp,wins,losses,win_streak,best_streak,win_rate,rank')
             .eq('id', profile.id)
             .single()
           setMyEntry(ownData as LeaderboardEntry ?? null)
@@ -71,7 +71,7 @@ export default function Leaderboard() {
       // Weekly
       const { data: rows } = await supabase
         .from('leaderboard_weekly')
-        .select('*')
+        .select('id,username,avatar,xp,wins,losses,win_streak,best_streak,win_rate,rank')
         .limit(50)
       setData((rows ?? []) as any)
     }
