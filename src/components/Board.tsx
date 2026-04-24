@@ -14,7 +14,7 @@
 // → identyczna logika jak newGame() → kafelki zawsze pasują do canvasu.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useCallback, useEffect, useRef } from 'react'
-import { BOARD_PRESETS, useConfigStore } from '../store/useConfigStore'
+import { getBoardDimensions, useConfigStore } from '../store/useConfigStore'
 import { getCatEmoji, useGameStore } from '../store/useGameStore'
 
 const PLAYERS = {
@@ -52,12 +52,9 @@ export default function Board() {
   const setCursor  = useGameStore(s => s.setCursor)
   const { config } = useConfigStore()
 
-  // ── NAPRAWA: używaj BOARD_PRESETS — identycznie jak newGame() ──────────────
-  // config.GRID_COLS/GRID_ROWS to stare pola, niesynchronizowane z BOARD_SHAPE.
-  // BOARD_PRESETS[BOARD_SHAPE].cols/rows to jedyne źródło prawdy.
-  const boardPreset = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-  const COLS = boardPreset.cols
-  const ROWS = boardPreset.rows
+  // ── Jedyne źródło prawdy o wymiarach planszy ─────────────────────────────
+  // getBoardDimensions() klamruje custom GRID_COLS/GRID_ROWS, fallbackuje na preset 0.
+  const { cols: COLS, rows: ROWS } = getBoardDimensions(config)
 
   /* ── Compute tile size to fill the container ── */
   const computeTileSize = useCallback(() => {

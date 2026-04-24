@@ -11,8 +11,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { SoundEngine } from '../lib/SoundEngine'
-import { clearSession, formatRemaining, sessionRemainingMs, supabase } from '../lib/supabase'
-import { BOARD_PRESETS, DEFAULTS, useConfigStore } from '../store/useConfigStore'
+import { clearSession, formatRemaining, invalidateCache, sessionRemainingMs, supabase } from '../lib/supabase'
+import { BOARD_PRESETS, CUSTOM_BOARD_LIMITS, DEFAULTS, getBoardDimensions, useConfigStore } from '../store/useConfigStore'
+import { clearGameState } from '../lib/persistence'
 import { Category, GameConfig, PlayerSettings, SpeechLang } from '../types'
 import { useAsyncAction } from '../hooks/useAsyncAction'
 import { useDebouncedCallback } from '../hooks/useDebounce'
@@ -149,8 +150,8 @@ export default function AdminConfig() {
   }, { onError: e => toast.error(e.message) })
 
   // ── Derived values ─────────────────────────────────────────────────────────
-  const preset     = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-  const totalTiles = preset.cols * preset.rows
+  const { cols: bCols, rows: bRows } = getBoardDimensions(config)
+  const totalTiles = bCols * bRows
 
   const sessionColor =
     sessionLeft < 5 * 60 * 1000  ? T.danger :
@@ -258,7 +259,6 @@ export default function AdminConfig() {
         )}
         {mode === 'sp' && spSect === 'advanced' && (
           <AdvancedSection
-            config={config} handleUpdate={handleUpdate}
             confirmResetAll={confirmResetAll} setConfirmResetAll={setConfirmResetAll}
             handleResetAll={() => runResetAll()} resetting={resetting}
           />
@@ -715,8 +715,9 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
 }) {
   const toast = useToast()
   const [confirmReset, setConfirmReset] = useState(false)
-  const preset = BOARD_PRESETS[config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-  const totalTiles = preset.cols * preset.rows
+  const { cols: dimCols, rows: dimRows } = getBoardDimensions(config)
+  const totalTiles = dimCols * dimRows
+  const isCustom = !!BOARD_PRESETS[config.BOARD_SHAPE]?.custom
 
   const { run: handleResetMap, loading: resettingMap } = useAsyncAction(async () => {
     await resetTileCategories()
@@ -733,6 +734,7 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 8 }}>
           {Object.entries(BOARD_PRESETS).map(([key, p]) => {
             const active = config.BOARD_SHAPE === Number(key)
+            const labelDims = p.custom ? `${dimCols}×${dimRows}` : `${p.cols}×${p.rows}`
             return (
               <button
                 key={key}
@@ -748,13 +750,41 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
                 <div style={{
                   fontFamily: "'Bebas Neue', sans-serif", fontSize: '1rem',
                   letterSpacing: 3, marginBottom: 2,
-                }}>{p.cols}×{p.rows}</div>
+                }}>{p.custom ? '🔧' : labelDims}</div>
                 <div>{p.label}</div>
               </button>
             )
           })}
         </div>
       </div>
+
+      {/* ── Manual dimensions (visible only for "Własny") ──────────────────── */}
+      {isCustom && (
+        <div style={{
+          marginBottom: 18, padding: 14,
+          background: 'rgba(212,175,55,0.04)',
+          border: `1px solid ${T.gold}33`, borderRadius: 12,
+        }}>
+          <div style={{ color: T.gold, fontSize: '0.72rem', letterSpacing: 1, marginBottom: 10 }}>
+            ⚙️ WŁASNE WYMIARY PLANSZY
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 8 }}>
+            <NumberField
+              label="Kolumny" desc={`Liczba kolumn (${CUSTOM_BOARD_LIMITS.minCols}-${CUSTOM_BOARD_LIMITS.maxCols})`}
+              value={config.GRID_COLS} min={CUSTOM_BOARD_LIMITS.minCols} max={CUSTOM_BOARD_LIMITS.maxCols} unit=""
+              onChange={v => handleUpdate('GRID_COLS', v)}
+            />
+            <NumberField
+              label="Wiersze" desc={`Liczba wierszy (${CUSTOM_BOARD_LIMITS.minRows}-${CUSTOM_BOARD_LIMITS.maxRows})`}
+              value={config.GRID_ROWS} min={CUSTOM_BOARD_LIMITS.minRows} max={CUSTOM_BOARD_LIMITS.maxRows} unit=""
+              onChange={v => handleUpdate('GRID_ROWS', v)}
+            />
+          </div>
+          <div style={{ fontSize: '0.7rem', color: T.textDim2, fontFamily: 'monospace' }}>
+            Aktualne wymiary: {dimCols}×{dimRows} = {totalTiles} pól
+          </div>
+        </div>
+      )}
 
       <ToggleField
         label="Losowe kategorie kafelków"
@@ -773,14 +803,14 @@ function BoardSection({ config, handleUpdate, cats, tileCategories, setTileCateg
               PRZYPISANIE KATEGORII
             </div>
             <div style={{ color: T.textDim3, fontSize: '0.7rem', fontFamily: 'monospace' }}>
-              {preset.cols}×{preset.rows} = {totalTiles} pól
+              {dimCols}×{dimRows} = {totalTiles} pól
             </div>
           </div>
           {/* minmax(0,1fr) — bez tego <select> wymusza szerokość najszerszej opcji
               → siatka rozpycha się poza kontener i kafelki wyglądają na brakujące */}
           <div style={{
             display: 'grid', gap: 6, marginBottom: 10,
-            gridTemplateColumns: `repeat(${preset.cols}, minmax(0, 1fr))`,
+            gridTemplateColumns: `repeat(${dimCols}, minmax(0, 1fr))`,
           }}>
             {Array.from({ length: totalTiles }, (_, i) => (
               <AdminSelect
@@ -956,37 +986,208 @@ function DisplaySection({ config, handleUpdate }: { config: GameConfig; handleUp
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// SP: ADVANCED SECTION
+// SP: ADVANCED SECTION — narzędzia administracyjne
 // ═════════════════════════════════════════════════════════════════════════════
-function AdvancedSection({ config, handleUpdate, confirmResetAll, setConfirmResetAll, handleResetAll, resetting }: {
-  config: GameConfig; handleUpdate: (k: keyof GameConfig, v: number) => void;
+interface DbStats {
+  categories: number; questions: number; profiles: number;
+  rooms: number; history: number;
+}
+
+function AdvancedSection({ confirmResetAll, setConfirmResetAll, handleResetAll, resetting }: {
   confirmResetAll: boolean; setConfirmResetAll: (v: boolean) => void;
   handleResetAll: () => void; resetting: boolean;
 }) {
+  const toast = useToast()
+  const [stats, setStats] = useState<DbStats | null>(null)
+  const [confirm, setConfirm] = useState<null | 'cache' | 'local' | 'history' | 'rooms' | 'bulk_stats'>(null)
+
+  // ── DB stats loader (count() head queries — jeden RTT każda, równolegle) ──
+  const { run: loadStats, loading: loadingStats } = useAsyncAction(async () => {
+    const tables = ['categories', 'questions', 'profiles', 'game_rooms', 'game_history'] as const
+    const results = await Promise.all(
+      tables.map(t => supabase.from(t).select('id', { count: 'exact', head: true })),
+    )
+    setStats({
+      categories: results[0].count ?? 0,
+      questions:  results[1].count ?? 0,
+      profiles:   results[2].count ?? 0,
+      rooms:      results[3].count ?? 0,
+      history:    results[4].count ?? 0,
+    })
+  }, { onError: e => toast.error(e.message) })
+
+  useEffect(() => { loadStats() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Cache invalidation (in-memory, react-query-style) ─────────────────────
+  const { run: clearCache } = useAsyncAction(async () => {
+    invalidateCache()
+    setConfirm(null)
+    toast.success('Wyczyszczono cache w pamięci')
+  }, { onError: e => toast.error(e.message) })
+
+  // ── Local state (sessionStorage + localStorage) — czyści zapisaną grę ─────
+  const { run: clearLocal } = useAsyncAction(async () => {
+    clearGameState()
+    try {
+      // Wyczyść też localStorage cache nicków graczy (zostaną pobrane z Supabase)
+      localStorage.removeItem('thefloor_players')
+    } catch {}
+    setConfirm(null)
+    toast.success('Wyczyszczono lokalny stan gry (sesja)')
+  }, { onError: e => toast.error(e.message) })
+
+  // ── Bulk reset all-stats (game_history + zerowanie statystyk profilów) ────
+  const { run: bulkResetStats, loading: resettingStats } = useAsyncAction(async () => {
+    // 1. Wyzeruj statystyki wszystkich graczy
+    const { error: pErr } = await supabase
+      .from('profiles')
+      .update({ wins: 0, losses: 0, win_streak: 0, best_streak: 0, xp: 0, updated_at: new Date().toISOString() })
+      .neq('id', '00000000-0000-0000-0000-000000000000') // wszystkie wiersze
+    if (pErr) throw new Error(`Profiles: ${pErr.message}`)
+    setConfirm(null)
+    invalidateCache()
+    toast.success('Zresetowano statystyki wszystkich graczy')
+    loadStats()
+  }, { onError: e => toast.error(e.message) })
+
+  // ── Purge MP history (game_history table) ─────────────────────────────────
+  const { run: purgeHistory, loading: purgingHistory } = useAsyncAction(async () => {
+    const { error } = await supabase
+      .from('game_history')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000')
+    if (error) throw new Error(error.message)
+    setConfirm(null)
+    toast.success('Wyczyszczono historię gier online')
+    loadStats()
+  }, { onError: e => toast.error(e.message) })
+
+  // ── Purge stale MP rooms (status != playing) ──────────────────────────────
+  const { run: purgeRooms, loading: purgingRooms } = useAsyncAction(async () => {
+    const { error } = await supabase
+      .from('game_rooms')
+      .delete()
+      .neq('status', 'playing')
+    if (error) throw new Error(error.message)
+    setConfirm(null)
+    toast.success('Usunięto nieaktywne pokoje (status ≠ playing)')
+    loadStats()
+  }, { onError: e => toast.error(e.message) })
+
+  // ── Confirm metadata ─────────────────────────────────────────────────────
+  const confirmDef: Record<NonNullable<typeof confirm>, {
+    title: string; message: string; label: string; loading: boolean; onConfirm: () => void;
+  }> = {
+    cache: {
+      title: 'WYCZYŚĆ CACHE', label: 'WYCZYŚĆ',
+      message: 'Wyczyści wszystkie wpisy cache w pamięci (kategorie, config). Następne odświeżenie pobierze świeże dane z bazy.',
+      loading: false, onConfirm: clearCache,
+    },
+    local: {
+      title: 'WYCZYŚĆ LOKALNY STAN', label: 'WYCZYŚĆ',
+      message: 'Usunie zapisaną grę singleplayer (sessionStorage) i lokalny cache nicków graczy. Nie wpływa na Supabase.',
+      loading: false, onConfirm: clearLocal,
+    },
+    history: {
+      title: 'WYCZYŚĆ HISTORIĘ MP', label: 'USUŃ',
+      message: 'Bezpowrotnie usuwa wszystkie wpisy z game_history. Tej akcji nie można cofnąć.',
+      loading: purgingHistory, onConfirm: purgeHistory,
+    },
+    rooms: {
+      title: 'USUŃ NIEAKTYWNE POKOJE', label: 'USUŃ',
+      message: 'Usuwa pokoje, które nie są w stanie "playing" (zakończone i oczekujące). Aktywne gry pozostaną nietknięte.',
+      loading: purgingRooms, onConfirm: purgeRooms,
+    },
+    bulk_stats: {
+      title: 'ZRESETUJ STATYSTYKI WSZYSTKICH GRACZY', label: 'RESETUJ',
+      message: 'Zeruje wins/losses/win_streak/best_streak/xp dla KAŻDEGO gracza w bazie. Tej akcji nie można cofnąć!',
+      loading: resettingStats, onConfirm: bulkResetStats,
+    },
+  }
+
   return (
     <div>
-      <SectionTitle icon="⚙️" title="Wymiary planszy (ręczne)" />
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-        <NumberField
-          label="Kolumny" desc="Nadpisuje preset"
-          value={config.GRID_COLS} min={2} max={10} unit=""
-          onChange={v => handleUpdate('GRID_COLS', v)}
+      <SectionTitle
+        icon="📊" title="Statystyki bazy danych"
+        action={<AdminButton onClick={loadStats} loading={loadingStats} variant="secondary" size="sm" icon="⟳">Odśwież</AdminButton>}
+      />
+      <div style={{
+        display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(140px,1fr))',
+        gap: 10, marginBottom: 24,
+      }}>
+        {[
+          { label: 'KATEGORIE',  v: stats?.categories, icon: '📂', color: T.gold },
+          { label: 'PYTANIA',    v: stats?.questions,  icon: '❓', color: T.gold },
+          { label: 'GRACZE',     v: stats?.profiles,   icon: '👥', color: T.success },
+          { label: 'POKOJE MP',  v: stats?.rooms,      icon: '🚪', color: T.mp },
+          { label: 'HISTORIA MP',v: stats?.history,    icon: '📋', color: T.mp },
+        ].map(({ label, v, icon, color }) => (
+          <Card key={label} padding="14px 16px">
+            <div style={{ fontSize: '1.1rem', marginBottom: 4 }}>{icon}</div>
+            <div style={{
+              fontFamily: "'Bebas Neue',sans-serif", fontSize: '1.6rem',
+              letterSpacing: 2, color, lineHeight: 1,
+            }}>{v ?? '—'}</div>
+            <div style={{ fontSize: '0.62rem', letterSpacing: 2, color: T.textDim2, marginTop: 4 }}>{label}</div>
+          </Card>
+        ))}
+      </div>
+
+      {/* ── Operacje konserwacyjne ─────────────────────────────────────────── */}
+      <SectionTitle icon="🧹" title="Konserwacja" />
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+        <ToolRow
+          icon="💾" title="Wyczyść cache w pamięci"
+          desc="Wymusi pobranie świeżych danych z Supabase przy następnym odświeżeniu (kategorie, konfiguracja)."
+          buttonLabel="Wyczyść cache"
+          onClick={() => setConfirm('cache')}
         />
-        <NumberField
-          label="Wiersze" desc="Nadpisuje preset"
-          value={config.GRID_ROWS} min={2} max={8} unit=""
-          onChange={v => handleUpdate('GRID_ROWS', v)}
+        <ToolRow
+          icon="🗂️" title="Wyczyść lokalny stan gry"
+          desc="Usuwa zapisaną grę singleplayer (sessionStorage) i lokalny cache graczy. Pomocne, gdy gra restartuje się z błędnym stanem."
+          buttonLabel="Wyczyść stan"
+          onClick={() => setConfirm('local')}
+        />
+        <ToolRow
+          icon="🚪" title="Usuń nieaktywne pokoje MP"
+          desc="Usuwa pokoje w stanie waiting/finished. Aktywne gry pozostaną."
+          buttonLabel="Usuń"
+          loading={purgingRooms}
+          onClick={() => setConfirm('rooms')}
+          variant="danger"
         />
       </div>
-      <InfoBox color="#fb923c">Ręczne wymiary są nadpisywane przy zmianie presetu w sekcji Plansza.</InfoBox>
 
-      <SectionTitle icon="🔁" title="Reset ustawień" />
+      {/* ── Operacje destrukcyjne ──────────────────────────────────────────── */}
+      <SectionTitle icon="⚠️" title="Operacje destrukcyjne" />
+      <InfoBox color={T.danger}>Wszystkie operacje poniżej są nieodwracalne — wykonują DELETE w bazie.</InfoBox>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginBottom: 24 }}>
+        <ToolRow
+          icon="🔄" title="Zresetuj statystyki wszystkich graczy"
+          desc="Zeruje wins/losses/win_streak/best_streak/xp dla KAŻDEGO konta. Profile zostaną nietknięte."
+          buttonLabel="Resetuj wszystkim"
+          loading={resettingStats}
+          onClick={() => setConfirm('bulk_stats')}
+          variant="danger"
+        />
+        <ToolRow
+          icon="📋" title="Wyczyść historię gier online"
+          desc="Usuwa wszystkie wpisy z tabeli game_history. Statystyki graczy zostają nienaruszone."
+          buttonLabel="Wyczyść historię"
+          loading={purgingHistory}
+          onClick={() => setConfirm('history')}
+          variant="danger"
+        />
+      </div>
+
+      {/* ── Reset wszystkich ustawień gry ──────────────────────────────────── */}
+      <SectionTitle icon="🔁" title="Reset ustawień gry" />
       <div style={{
         padding: 18, background: 'rgba(239,68,68,0.04)',
         border: `1px solid ${T.danger}30`, borderRadius: 12,
       }}>
         <div style={{ color: T.textDim, fontSize: '0.85rem', marginBottom: 12 }}>
-          Przywróci wszystkie ustawienia do wartości domyślnych.
+          Przywraca konfigurację gry (czasy, kary, XP, plansza) do wartości domyślnych. Nie usuwa graczy ani historii.
         </div>
         <AdminButton onClick={() => setConfirmResetAll(true)} variant="danger" size="md">
           Reset do domyślnych
@@ -1003,7 +1204,42 @@ function AdvancedSection({ config, handleUpdate, confirmResetAll, setConfirmRese
         onConfirm={handleResetAll}
         onCancel={() => setConfirmResetAll(false)}
       />
+
+      {confirm && (
+        <ConfirmDialog
+          open
+          danger
+          title={confirmDef[confirm].title}
+          message={confirmDef[confirm].message}
+          confirmLabel={confirmDef[confirm].label}
+          loading={confirmDef[confirm].loading}
+          onConfirm={confirmDef[confirm].onConfirm}
+          onCancel={() => !confirmDef[confirm].loading && setConfirm(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── ToolRow — wiersz narzędziowy w sekcji Zaawansowane ──────────────────────
+function ToolRow({ icon, title, desc, buttonLabel, onClick, loading, variant = 'secondary' }: {
+  icon: string; title: string; desc: string;
+  buttonLabel: string; onClick: () => void;
+  loading?: boolean; variant?: 'secondary' | 'danger';
+}) {
+  return (
+    <Card padding="14px 16px">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+        <div style={{ fontSize: '1.4rem', flexShrink: 0 }}>{icon}</div>
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <div style={{ color: T.text, fontSize: '0.9rem', marginBottom: 3 }}>{title}</div>
+          <div style={{ color: T.textDim2, fontSize: '0.72rem', lineHeight: 1.4 }}>{desc}</div>
+        </div>
+        <AdminButton onClick={onClick} loading={loading} variant={variant} size="sm">
+          {buttonLabel}
+        </AdminButton>
+      </div>
+    </Card>
   )
 }
 

@@ -16,7 +16,7 @@ import {
   Category, MPActivePlayer, MPDuelState, MPEvent,
   MPGameState, MPRole, MPStatus, Question, SpeechLang, Tile, TileOwner,
 } from '../types'
-import { BOARD_PRESETS, useConfigStore } from './useConfigStore'
+import { getBoardDimensions, useConfigStore } from './useConfigStore'
 import { useAuthStore } from './useAuthStore'
 
 // ── Module-level state ───────────────────────────────────────────────────────
@@ -185,8 +185,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   function buildTiles(cats: (Category & { questions: Question[] })[], categoriesCount?: number) {
     const mpPreset = categoriesCount ? MP_BOARD[categoriesCount] : undefined
     const cfg      = useConfigStore.getState().config
-    const spPreset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const { cols, rows } = mpPreset ?? spPreset
+    const { cols, rows } = mpPreset ?? getBoardDimensions(cfg)
 
     const count   = categoriesCount ?? (cols * rows)
     const limited = count < cats.length ? shuffle(cats).slice(0, count) : shuffle(cats)

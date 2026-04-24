@@ -105,6 +105,9 @@ export default function AdminPlayers() {
 
   useEffect(() => { load() }, [load])
 
+  // ── Cleanup: zamknij dialogi gdy komponent znika z drzewa (np. tab switch) ─
+  useEffect(() => () => { setConfirm(null); setEditing(null); setEditVals(null) }, [])
+
   // ── Derived: filtered + overview ─────────────────────────────────────────────
   const filtered = useMemo(() =>
     players.filter(p => !search || p.username?.toLowerCase().includes(search.toLowerCase())),
@@ -210,6 +213,18 @@ export default function AdminPlayers() {
   const openConfirm = (type: ConfirmType, p: Player) => {
     setConfirm({ type, playerId: p.id, username: p.username })
   }
+
+  // ── Esc zamyka aktywny dialog (musi być po useAsyncAction żeby `saving`/`executing` istniały) ─
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (saving || executing) return
+      if (editing) { setEditing(null); setEditVals(null) }
+      else if (confirm) setConfirm(null)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [editing, confirm, saving, executing])
 
   // ── Styles ────────────────────────────────────────────────────────────────
   const C = useMemo(() => ({

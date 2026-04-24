@@ -42,7 +42,13 @@ export function useAsyncAction<A extends unknown[], R>(
 
   useEffect(() => { fnRef.current = fn }, [fn])
   useEffect(() => { optsRef.current = opts }, [opts])
-  useEffect(() => () => { mounted.current = false }, [])
+  // StrictMode-safe: ustaw `true` na każde mount, `false` na cleanup —
+  // chroni przed pozostaniem `false` po cyklu mount→unmount→mount.
+  useEffect(() => {
+    mounted.current = true
+    inFlight.current = false
+    return () => { mounted.current = false }
+  }, [])
 
   const run = useCallback(async (...args: A): Promise<R | undefined> => {
     if (inFlight.current) return undefined

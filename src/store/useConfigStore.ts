@@ -57,13 +57,36 @@ export const DEFAULTS: GameConfig = {
 	MP_XP_LOSS: 0,
 }
 
-export const BOARD_PRESETS: Record<number, { cols: number; rows: number; label: string }> = {
+export const BOARD_PRESETS: Record<number, { cols: number; rows: number; label: string; custom?: boolean }> = {
 	0: { cols: 4, rows: 3, label: 'Prostokąt (4×3)' },
 	1: { cols: 6, rows: 2, label: 'Szeroka (6×2)' },
 	2: { cols: 3, rows: 4, label: 'Wysoka (3×4)' },
 	3: { cols: 4, rows: 4, label: 'Kwadrat (4×4)' },
 	4: { cols: 5, rows: 3, label: 'Duża (5×3)' },
 	5: { cols: 6, rows: 4, label: 'Bardzo duża (6×4)' },
+	6: { cols: 0, rows: 0, label: 'Własny', custom: true },
+}
+
+// Dopuszczalne granice własnych wymiarów (chroni przed nonsensownymi wartościami w DB)
+export const CUSTOM_BOARD_LIMITS = { minCols: 2, maxCols: 10, minRows: 2, maxRows: 8 }
+
+/**
+ * Jedyna prawda o wymiarach planszy.
+ * Zawsze zwraca poprawne `{cols, rows}`, niezależnie od stanu config.
+ *  - shape 0..5: bierze z BOARD_PRESETS
+ *  - shape 6 (Własny): używa GRID_COLS/GRID_ROWS, klamruje do limitów
+ *  - inne / corrupted: fallback na preset 0
+ */
+export function getBoardDimensions(config: GameConfig): { cols: number; rows: number } {
+	const preset = BOARD_PRESETS[config.BOARD_SHAPE]
+	if (!preset) return { cols: BOARD_PRESETS[0].cols, rows: BOARD_PRESETS[0].rows }
+	if (preset.custom) {
+		const { minCols, maxCols, minRows, maxRows } = CUSTOM_BOARD_LIMITS
+		const cols = Math.max(minCols, Math.min(maxCols, config.GRID_COLS || minCols))
+		const rows = Math.max(minRows, Math.min(maxRows, config.GRID_ROWS || minRows))
+		return { cols, rows }
+	}
+	return { cols: preset.cols, rows: preset.rows }
 }
 
 export const DEFAULT_PLAYERS: [PlayerSettings, PlayerSettings] = [

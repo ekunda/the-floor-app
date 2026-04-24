@@ -11,7 +11,7 @@ import { create } from 'zustand'
 import { getCachedStale, setCached, supabase } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
 import { Category, DuelState, GameStats, Question, Tile, TileOwner } from '../types'
-import { BOARD_PRESETS, useConfigStore } from './useConfigStore'
+import { getBoardDimensions, useConfigStore } from './useConfigStore'
 
 export const CATEGORY_EMOJI: Record<string, string> = {
   zwierzęta: '🐶', jedzenie: '🍕', filmy: '🎬', sport: '⚽', muzyka: '🎵',
@@ -163,11 +163,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     //      ma x/y poza nowym canvasem → rysują się za jego granicą
     // Odrzucamy taki zapis i startujemy świeżą grę z poprawnym rozmiarem.
     const cfg           = useConfigStore.getState().config
-    const preset        = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const expectedTotal = preset.cols * preset.rows
+    const { cols, rows } = getBoardDimensions(cfg)
+    const expectedTotal = cols * rows
     const shapeMismatch =
       saved.tiles.length !== expectedTotal ||
-      saved.tiles.some(t => t.x >= preset.cols || t.y >= preset.rows || t.x < 0 || t.y < 0)
+      saved.tiles.some(t => t.x >= cols || t.y >= rows || t.x < 0 || t.y < 0)
     if (shapeMismatch) {
       clearGameState()
       set({ categories, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
@@ -175,9 +175,23 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return true
     }
 
+    // ── Drugi guard: jeśli admin usunął/zmienił kategorie, podmień orphany ─────
+    // Tile z categoryId, który już nie istnieje → rysuje się jako "puste pole".
+    // Mapujemy orphans na pierwszą dostępną kategorię (lub pusty fallback).
+    const validIds = new Set(categories.map(c => c.id))
+    const fallback = categories[0]
+    const patched  = saved.tiles.map(t => {
+      if (validIds.has(t.categoryId)) return t
+      return {
+        ...t,
+        categoryId:   fallback?.id   ?? '',
+        categoryName: fallback?.name ?? 'Kategoria',
+      }
+    })
+
     set({
       categories,
-      tiles:     saved.tiles,
+      tiles:     patched,
       cursor:    Math.min(Math.max(saved.cursor, 0), expectedTotal - 1),
       showStats: saved.showStats,
     })
@@ -214,8 +228,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { categories } = get()
     const cfg            = useConfigStore.getState().config
     const { tileCategories } = useConfigStore.getState()
-    const preset = BOARD_PRESETS[cfg.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const { cols, rows } = preset
+    const { cols, rows } = getBoardDimensions(cfg)
     const total  = cols * rows
 
     let catList: ((Category & { questions: Question[] }) | undefined)[]
@@ -247,9 +260,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   moveCursor: dir => {
     const { cursor } = get()
-    const preset = BOARD_PRESETS[useConfigStore.getState().config.BOARD_SHAPE] ?? BOARD_PRESETS[0]
-    const { cols } = preset
-    const total    = cols * preset.rows
+    const { cols, rows } = getBoardDimensions(useConfigStore.getState().config)
+    const total    = cols * rows
     let next       = cursor
     if (dir === 'up')    next = cursor - cols
     if (dir === 'down')  next = cursor + cols
