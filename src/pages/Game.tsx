@@ -16,12 +16,14 @@ export default function Game() {
 	const newGame = useGameStore(s => s.newGame)
 	const moveCursor = useGameStore(s => s.moveCursor)
 	const startChallenge = useGameStore(s => s.startChallenge)
+	const lotteryPick = useGameStore(s => s.lotteryPick)
 	const duel = useGameStore(s => s.duel)
 	const toastText = useGameStore(s => s.toastText)
 	const tiles = useGameStore(s => s.tiles)
 	const showStats = useGameStore(s => s.showStats)
 	const toggleStats = useGameStore(s => s.toggleStats)
-	const { fetch: fetchConfig, players } = useConfigStore()
+	const { fetch: fetchConfig, players, config } = useConfigStore()
+	const lotteryEnabled = config.LOTTERY_PICK === 1
 
 	const [appState, setAppState] = useState<AppState>('splash')
 
@@ -85,6 +87,13 @@ export default function Game() {
 				case 'S':
 					if (!e.ctrlKey) toggleStats()
 					break
+				case 'l':
+				case 'L':
+					if (!e.ctrlKey && lotteryEnabled) {
+						e.preventDefault()
+						lotteryPick()
+					}
+					break
 			}
 		}
 		window.addEventListener('keydown', handler)
@@ -92,7 +101,7 @@ export default function Game() {
 	// Zustand actions są stabilnymi referencjami — nie trzeba ich w deps.
 	// duel i appState zmieniają się i faktycznie wpływają na handler.
 	// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [appState, duel])
+	}, [appState, duel, lotteryEnabled])
 
 	/* ── SPLASH ── */
 	if (appState === 'splash') {
@@ -250,7 +259,12 @@ export default function Game() {
 			)}
 
 			{/* Key hint */}
-			{!duel && <div style={styles.keyHint}>↑↓←→ poruszanie · ENTER pojedynek · S statystyki · N nowa gra</div>}
+			{!duel && (
+				<div style={styles.keyHint}>
+					↑↓←→ poruszanie · ENTER pojedynek · S statystyki · N nowa gra
+					{lotteryEnabled ? ' · L losuj kategorię' : ''}
+				</div>
+			)}
 
 			{/* Toast */}
 			{toastText && <div style={styles.toast}>{toastText}</div>}

@@ -46,11 +46,13 @@ export default function Board() {
   const rafRef       = useRef(0)
   const tileSizeRef  = useRef(120)
 
-  const tiles      = useGameStore(s => s.tiles)
-  const cursor     = useGameStore(s => s.cursor)
-  const categories = useGameStore(s => s.categories)
-  const setCursor  = useGameStore(s => s.setCursor)
-  const { config } = useConfigStore()
+  const tiles             = useGameStore(s => s.tiles)
+  const cursor            = useGameStore(s => s.cursor)
+  const categories        = useGameStore(s => s.categories)
+  const setCursor         = useGameStore(s => s.setCursor)
+  const playedTileIndices = useGameStore(s => s.playedTileIndices)
+  const { config }        = useConfigStore()
+  const lotteryEnabled    = config.LOTTERY_PICK === 1
 
   // ── Jedyne źródło prawdy o wymiarach planszy ─────────────────────────────
   // getBoardDimensions() klamruje custom GRID_COLS/GRID_ROWS, fallbackuje na preset 0.
@@ -116,10 +118,13 @@ export default function Board() {
       const S = tileSizeRef.current
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-      for (const tile of tiles) {
+      for (let i = 0; i < tiles.length; i++) {
+        const tile = tiles[i]
         const px = tile.x * S
         const py = tile.y * S
         const p  = PLAYERS[tile.owner]
+        // W trybie losowania (L) — kafelki rozegrane są przyciemnione i wykluczone z losowania.
+        const isPlayed = lotteryEnabled && playedTileIndices.includes(i)
 
         // Tło kafelka
         ctx.fillStyle = p.color
@@ -179,31 +184,82 @@ export default function Board() {
 
         const lineH  = fontSize + 2
         const startY = py + S * 0.74 - ((lines.length - 1) * lineH) / 2
-        lines.forEach((line, i) => ctx.fillText(line, px + S / 2, startY + i * lineH))
+        lines.forEach((line, li) => ctx.fillText(line, px + S / 2, startY + li * lineH))
+
+        // Dezaktywacja kafelka rozegranego (tryb losowania)
+        if (isPlayed) {
+          ctx.fillStyle = 'rgba(0,0,0,0.55)'
+          ctx.fillRect(px, py, S, S)
+          // Kłódka w prawym górnym rogu — sygnalizuje "rozegrane"
+          const lockSize = Math.max(14, Math.round(S * 0.16))
+          ctx.font          = `${lockSize}px serif`
+          ctx.textAlign     = 'right'
+          ctx.textBaseline  = 'top'
+          ctx.fillStyle     = 'rgba(255,255,255,0.55)'
+          ctx.fillText('🔒', px + S - 6, py + 4)
+        }
       }
 
-      // Pulsujący kursor
+      // ── Pulsujący kursor — bardziej widoczny na dużych ekranach ─────────────
+      // Rozmiary i alpha skalują się z S, żeby na 4K planszy nadal było czytelne.
       pulseRef.current = (pulseRef.current + 1) % 120
-      const alpha = 0.5 + 0.45 * Math.sin(pulseRef.current * 0.0524)
+      const phase = pulseRef.current * 0.0524 // ≈ 2π/120
+      const alpha = 0.6 + 0.4 * Math.sin(phase) // 0.2..1.0
       const cx    = (cursor % COLS) * S
       const cy    = Math.floor(cursor / COLS) * S
 
-      ctx.shadowColor  = `rgba(80,255,80,${(alpha * 0.6).toFixed(2)})`
-      ctx.shadowBlur   = 12
-      ctx.strokeStyle  = `rgba(80,255,80,${alpha.toFixed(2)})`
-      ctx.lineWidth    = 3
-      ctx.setLineDash([10, 5])
-      ctx.strokeRect(cx + 3, cy + 3, S - 6, S - 6)
-      ctx.setLineDash([])
-      ctx.shadowBlur   = 0
-      ctx.shadowColor  = 'transparent'
+      const lineW    = Math.max(4, Math.round(S * 0.04))    // grubość ramki ~4% kafelka
+      const blur     = Math.max(18, Math.round(S * 0.18))   // poświata ~18% kafelka
+      const inset    = Math.max(4, Math.round(S * 0.05))    // odsunięcie ramki od krawędzi
+      const dashLen  = Math.max(12, Math.round(S * 0.10))
+      const gapLen   = Math.max(6,  Math.round(S * 0.05))
+
+      // Warstwa 1 — szeroka poświata na zewnątrz
+      ctx.save()
+      ctx.shadowColor = `rgba(80,255,120,${(alpha * 0.85).toFixed(2)})`
+      ctx.shadowBlur  = blur
+      ctx.strokeStyle = `rgba(120,255,140,${alpha.toFixed(2)})`
+      ctx.lineWidth   = lineW
+      ctx.setLineDash([dashLen, gapLen])
+      ctx.strokeRect(cx + inset, cy + inset, S - inset * 2, S - inset * 2)
+      ctx.restore()
+
+      // Warstwa 2 — wewnętrzna jaśniejsza, ciągła ramka dla ostrości krawędzi
+      ctx.save()
+      ctx.strokeStyle = `rgba(220,255,220,${(alpha * 0.95).toFixed(2)})`
+      ctx.lineWidth   = Math.max(2, Math.round(lineW * 0.45))
+      ctx.strokeRect(cx + inset + lineW * 0.6, cy + inset + lineW * 0.6,
+                     S - (inset + lineW * 0.6) * 2, S - (inset + lineW * 0.6) * 2)
+      ctx.restore()
+
+      // Warstwa 3 — narożniki "celownika" zawsze pełnym alpha (akcent)
+      const cLen = Math.max(10, Math.round(S * 0.18))
+      ctx.save()
+      ctx.strokeStyle = `rgba(255,255,255,${(0.55 + alpha * 0.4).toFixed(2)})`
+      ctx.lineWidth   = Math.max(3, Math.round(lineW * 0.7))
+      ctx.lineCap     = 'round'
+      ctx.beginPath()
+      // top-left
+      ctx.moveTo(cx + inset, cy + inset + cLen);            ctx.lineTo(cx + inset, cy + inset)
+      ctx.lineTo(cx + inset + cLen, cy + inset)
+      // top-right
+      ctx.moveTo(cx + S - inset - cLen, cy + inset);        ctx.lineTo(cx + S - inset, cy + inset)
+      ctx.lineTo(cx + S - inset, cy + inset + cLen)
+      // bottom-right
+      ctx.moveTo(cx + S - inset, cy + S - inset - cLen);    ctx.lineTo(cx + S - inset, cy + S - inset)
+      ctx.lineTo(cx + S - inset - cLen, cy + S - inset)
+      // bottom-left
+      ctx.moveTo(cx + inset + cLen, cy + S - inset);        ctx.lineTo(cx + inset, cy + S - inset)
+      ctx.lineTo(cx + inset, cy + S - inset - cLen)
+      ctx.stroke()
+      ctx.restore()
 
       rafRef.current = requestAnimationFrame(draw)
     }
 
     rafRef.current = requestAnimationFrame(draw)
     return () => cancelAnimationFrame(rafRef.current)
-  }, [tiles, cursor, categories, COLS])
+  }, [tiles, cursor, categories, COLS, lotteryEnabled, playedTileIndices])
 
   return (
     <div

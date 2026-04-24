@@ -34,6 +34,7 @@ export const DEFAULTS: GameConfig = {
 	TOAST_MS: 1600,
 	RANDOM_TILES: 0,
 	MAX_PASSES: 0,
+	LOTTERY_PICK: 0,
 	// Dźwięk
 	SOUND_VOLUME: 80, // legacy fallback
 	MUSIC_VOLUME: 70,

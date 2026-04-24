@@ -71,6 +71,8 @@ interface GameStore {
   toastText:  string
   toastTimer: ReturnType<typeof setTimeout> | null
   showStats:  boolean
+  /** Indeksy kafelków rozegranych w bieżącej grze (zerowane przez newGame). */
+  playedTileIndices: number[]
 
   loadCategories:    () => Promise<void>
   restoreSession:    () => Promise<boolean>
@@ -89,6 +91,8 @@ interface GameStore {
   nextQuestion:      () => Question | null
   endDuelWithWinner: (winnerNum: 1 | 2) => void
   endDuelDraw:       () => void
+  /** Losuje kursor z nierozegranych kafelków. Po wyczerpaniu — restart cyklu. */
+  lotteryPick:       () => void
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -127,6 +131,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
   toastText:  '',
   toastTimer: null,
   showStats:  true,
+  playedTileIndices: [],
 
   loadCategories: async () => {
     const needsNewGame = () => get().tiles.length === 0
@@ -250,7 +255,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     })
 
     const wasEmpty = get().tiles.length === 0
-    set({ tiles, cursor: Math.floor(total / 2) - 1, duel: null })
+    set({ tiles, cursor: Math.floor(total / 2) - 1, duel: null, playedTileIndices: [] })
     if (!wasEmpty) get().showToast('🎮 Nowa gra!')
     resetPassLocks(); _correctLock = false
     clearGameState()
@@ -271,14 +276,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   startChallenge: () => {
-    const { tiles, cursor, categories, duel } = get()
+    const { tiles, cursor, categories, duel, playedTileIndices } = get()
     if (duel) return
     const tile = tiles[cursor]
     if (!tile) return
+    const cfg = useConfigStore.getState().config
+    if (cfg.LOTTERY_PICK === 1 && playedTileIndices.includes(cursor)) {
+      get().showToast('🔒 Ta kategoria została już rozegrana — wybierz inną (L)')
+      return
+    }
     const cat       = categories.find(c => c.id === tile.categoryId)
     const questions = cat?.questions ?? []
     if (questions.length === 0) { get().showToast('❌ Brak pytań w tej kategorii'); return }
-    const cfg = useConfigStore.getState().config
     set({
       duel: {
         tileIdx: cursor, categoryId: tile.categoryId, categoryName: tile.categoryName,
@@ -392,15 +401,51 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   endDuelWithWinner: (winnerNum) => {
-    const { tiles, duel } = get()
+    const { tiles, duel, playedTileIndices } = get()
     if (!duel) return
-    set({ tiles: tiles.map((t, i) => i === duel.tileIdx ? { ...t, owner: (winnerNum === 1 ? 'gold' : 'silver') as TileOwner } : t), duel: { ...duel, paused: true } })
+    const played = playedTileIndices.includes(duel.tileIdx)
+      ? playedTileIndices
+      : [...playedTileIndices, duel.tileIdx]
+    set({
+      tiles: tiles.map((t, i) =>
+        i === duel.tileIdx ? { ...t, owner: (winnerNum === 1 ? 'gold' : 'silver') as TileOwner } : t,
+      ),
+      duel: { ...duel, paused: true },
+      playedTileIndices: played,
+    })
   },
 
   endDuelDraw: () => {
-    const { duel } = get()
+    const { duel, playedTileIndices } = get()
     if (!duel) return
-    set({ duel: { ...duel, paused: true } })
+    const played = playedTileIndices.includes(duel.tileIdx)
+      ? playedTileIndices
+      : [...playedTileIndices, duel.tileIdx]
+    set({ duel: { ...duel, paused: true }, playedTileIndices: played })
+  },
+
+  lotteryPick: () => {
+    const { tiles, playedTileIndices, duel } = get()
+    if (duel || tiles.length === 0) return
+
+    // Pula nierozegranych. Po wyczerpaniu — restart cyklu.
+    let pool = tiles
+      .map((_, i) => i)
+      .filter(i => !playedTileIndices.includes(i))
+    let cycleReset = false
+    if (pool.length === 0) {
+      pool = tiles.map((_, i) => i)
+      cycleReset = true
+    }
+
+    const pick = pool[Math.floor(Math.random() * pool.length)]
+    if (cycleReset) {
+      // Wszystkie kategorie rozegrane → zerujemy historię i wskazujemy nowe pole.
+      set({ playedTileIndices: [], cursor: pick })
+      get().showToast('🔁 Wszystkie kategorie rozegrane — losowanie od nowa')
+    } else {
+      set({ cursor: pick })
+    }
   },
 }))
 

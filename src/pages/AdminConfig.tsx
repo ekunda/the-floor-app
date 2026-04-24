@@ -861,12 +861,18 @@ function GameplaySPSection({ config, handleUpdate }: { config: GameConfig; handl
           />
         ))}
       </div>
-      <div style={{ marginTop: 14 }}>
+      <div style={{ marginTop: 14, display: 'flex', flexDirection: 'column', gap: 8 }}>
         <ToggleField
           label="Pas głosem (PASS / PAS)"
           desc='Rozpoznawanie słowa "pass" przez mikrofon jak w programie The Floor'
           value={config.VOICE_PASS === 1}
           onChange={v => handleUpdate('VOICE_PASS', v ? 1 : 0)}
+        />
+        <ToggleField
+          label='Losowanie kafelków (klawisz "L")'
+          desc="Klawisz L losuje kategorię z nierozegranych pól. Po rozegraniu rundy kafelek się dezaktywuje aż do końca cyklu lub Nowej Gry."
+          value={config.LOTTERY_PICK === 1}
+          onChange={v => handleUpdate('LOTTERY_PICK', v ? 1 : 0)}
         />
       </div>
     </div>

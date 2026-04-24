@@ -5,6 +5,7 @@ export interface GameConfig {
   DUEL_TIME: number; PASS_PENALTY: number; FEEDBACK_MS: number
   WIN_CLOSE_MS: number; TOAST_MS: number; RANDOM_TILES: number
   MAX_PASSES: number; ROUND_TIMER: number; MAX_ROUNDS: number
+  LOTTERY_PICK: number  // 1 = klawisz "L" losuje kursor z nierozegranych kafelków
   // Sound
   SOUND_VOLUME: number; MUSIC_VOLUME: number; SFX_VOLUME: number
   // Voice
