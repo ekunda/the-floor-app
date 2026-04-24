@@ -991,6 +991,8 @@ function DisplaySection({ config, handleUpdate }: { config: GameConfig; handleUp
 interface DbStats {
   categories: number; questions: number; profiles: number;
   rooms: number; history: number;
+  online?: number; in_game?: number; rooms_active?: number;
+  total_xp?: number; rounds?: number; queue?: number;
 }
 
 function AdvancedSection({ confirmResetAll, setConfirmResetAll, handleResetAll, resetting }: {
@@ -1001,8 +1003,15 @@ function AdvancedSection({ confirmResetAll, setConfirmResetAll, handleResetAll, 
   const [stats, setStats] = useState<DbStats | null>(null)
   const [confirm, setConfirm] = useState<null | 'cache' | 'local' | 'history' | 'rooms' | 'bulk_stats'>(null)
 
-  // ── DB stats loader (count() head queries — jeden RTT każda, równolegle) ──
+  // ── DB stats loader — preferuje RPC admin_db_stats() (1 RTT zamiast 5).
+  //    Fallback na count() head queries gdy migracja jeszcze nie wgrana.
   const { run: loadStats, loading: loadingStats } = useAsyncAction(async () => {
+    const { data, error } = await supabase.rpc('admin_db_stats')
+    if (!error && data) {
+      setStats(data as DbStats)
+      return
+    }
+    // Fallback: pre-migration databases
     const tables = ['categories', 'questions', 'profiles', 'game_rooms', 'game_history'] as const
     const results = await Promise.all(
       tables.map(t => supabase.from(t).select('id', { count: 'exact', head: true })),
@@ -1036,17 +1045,23 @@ function AdvancedSection({ confirmResetAll, setConfirmResetAll, handleResetAll, 
     toast.success('Wyczyszczono lokalny stan gry (sesja)')
   }, { onError: e => toast.error(e.message) })
 
-  // ── Bulk reset all-stats (game_history + zerowanie statystyk profilów) ────
+  // ── Bulk reset all-stats — używa RPC admin_reset_all_stats() (atomic).
+  //    RPC ma SECURITY DEFINER + sprawdzenie is_admin → omija RLS na tysiącach
+  //    wierszy i wszystko leci w jednej transakcji. Fallback na update() gdy RPC niedostępne.
   const { run: bulkResetStats, loading: resettingStats } = useAsyncAction(async () => {
-    // 1. Wyzeruj statystyki wszystkich graczy
-    const { error: pErr } = await supabase
-      .from('profiles')
-      .update({ wins: 0, losses: 0, win_streak: 0, best_streak: 0, xp: 0, updated_at: new Date().toISOString() })
-      .neq('id', '00000000-0000-0000-0000-000000000000') // wszystkie wiersze
-    if (pErr) throw new Error(`Profiles: ${pErr.message}`)
+    const rpc = await supabase.rpc('admin_reset_all_stats')
+    if (rpc.error) {
+      // Fallback (np. brak migracji)
+      const { error: pErr } = await supabase
+        .from('profiles')
+        .update({ wins: 0, losses: 0, win_streak: 0, best_streak: 0, xp: 0, updated_at: new Date().toISOString() })
+        .neq('id', '00000000-0000-0000-0000-000000000000')
+      if (pErr) throw new Error(`Profiles: ${pErr.message}`)
+    }
     setConfirm(null)
     invalidateCache()
-    toast.success('Zresetowano statystyki wszystkich graczy')
+    const n = typeof rpc.data === 'number' ? rpc.data : null
+    toast.success(n != null ? `Zresetowano statystyki: ${n} graczy` : 'Zresetowano statystyki wszystkich graczy')
     loadStats()
   }, { onError: e => toast.error(e.message) })
 
