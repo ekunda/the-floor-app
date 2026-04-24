@@ -1,35 +1,22 @@
 /**
- * useSpeechRecognition — Zoptymalizowany Web Speech API hook
+ * useSpeechRecognition — v3 rewrite
  *
- * OPTYMALIZACJE vs poprzednia wersja:
+ * ARCHITECTURE:
+ *   Matching pipeline:  transcript → normalizeText → MatchData lookup
+ *   Recognition loop:   continuous + auto-restart (zero-gap / leapfrog)
+ *   Error recovery:     watchdog timer + transient error retry
  *
- * 1. PRE-KOMPILOWANE REGEXY (najważniejsze)
- *    wholeWordMatch() tworzyło new RegExp() przy każdym wywołaniu.
- *    Teraz: regexCache = Map<phrase, RegExp> — kompilacja raz na zmianę pytania.
- *    Efekt: ~10× szybsze matching przy wielu synonimach.
- *
- * 2. PRE-NORMALIZACJA ODPOWIEDZI
- *    normalizeText(answer) i normalizeText(synonym) wywoływane były przy każdym
- *    zdarzeniu mowy. Teraz: obliczane raz i cache'owane w matchDataRef.
- *    Efekt: eliminuje N×normalizeText() per interim event.
- *
- * 3. ZERO-GAP RESTART
- *    Poprzednio: 100ms przerwa po onend przy single-lang.
- *    Teraz: 0ms — natychmiastowy restart (jak leapfrog).
- *    Efekt: brak "głuchoty" po każdej sesji Chrome (~co 60s).
- *
- * 4. SPEECHGRAMMARLIST — WSKAZÓWKI DLA PRZEGLĄDARKI
- *    Chrome obsługuje JSGF grammar hints. Podanie oczekiwanej odpowiedzi
- *    jako grammar znacząco poprawia trafność i redukuje latencję modelu ASR.
- *    Metoda: updateGrammar(answer, synonyms) — wywoływana przy zmianie pytania.
- *    Efekt: przeglądarka "wie" czego szukać → szybciej to wykrywa.
- *
- * 5. maxAlternatives = 1 NA INTERIM, 3 NA FINAL
- *    Osiągane przez osobne instancje z różnymi ustawieniami (nie można zmienić
- *    w locie). W praktyce Chrome i tak zwraca 1 na interim.
- *
- * 6. EARLY EXIT W isAnswerMatch
- *    Jeśli nSpoken jest pusty lub krótszy niż najkrótszy możliwy match → skip.
+ * OPTIMIZATIONS:
+ *   1. Pre-compiled regex cache (compile once per phrase)
+ *   2. Pre-normalized MatchData with singleWords Set for O(1) includes()
+ *   3. Zero-gap restart / leapfrog for multi-lang
+ *   4. JSGF grammar hints for Chrome ASR
+ *   5. All interim alternatives processed (up to 4)
+ *   6. Substring matching on interims for single-word answers
+ *   7. Polish-specific: ł→l, common ASR error corrections
+ *   8. Pre-compiled pass command regex (O(1) vs O(n) iteration)
+ *   9. Watchdog: auto-restart if recognition silently dies
+ *  10. Retry on transient errors (network, audio-capture)
  */
 
 import { useEffect, useRef, useState } from 'react'
@@ -75,24 +62,21 @@ interface UseSpeechRecognitionOptions {
   onInterim:  (transcript: string) => void
   active:     boolean
   lang?:      string | string[]
-  /**
-   * Zmiana tej wartości wymusza natychmiastowy restart recognition.
-   * Używane przez watchdog w MultiplayerGame gdy recognition cicho umrze.
-   * Czystsze niż toggle active off→on z zewnątrz.
-   */
+  /** Change value to force-restart recognition (watchdog use) */
   restartKey?: number
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Text normalization (bez zmian — logika sprawdzona)
+// Text normalization — Polish-aware
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function normalizeText(text: string): string {
   return text
     .toLowerCase()
+    .replace(/ł/g, 'l')               // ł→l (NFD doesn't decompose ł)
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')  // ą→a, ę→e, ó→o itd.
-    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/[\u0300-\u036f]/g, '')   // ą→a, ę→e, ó→o, ś→s, ż→z, ź→z, ć→c, ń→n
+    .replace(/[^a-z0-9\s]/g, '')       // strip punctuation
     .replace(/\s+/g, ' ')
     .trim()
 }
@@ -101,12 +85,20 @@ function stripArticles(t: string): string {
   return t.replace(/\b(the|a|an)\s+/g, '').replace(/\s+/g, ' ').trim()
 }
 
+// ── Stemming (simple suffix-based) ──────────────────────────────────────────
+
 function stemWord(w: string): string {
   if (w.length <= 3) return w
+  // English
   if (w.endsWith('ies') && w.length > 4) return w.slice(0, -3) + 'y'
   if (w.endsWith('ves') && w.length > 4) return w.slice(0, -3) + 'f'
   if (w.endsWith('ing') && w.length > 5) return w.slice(0, -3)
   if (w.endsWith('ed')  && w.length > 4) return w.slice(0, -2)
+  // Polish diminutives / plurals
+  if (w.endsWith('ow')  && w.length > 4) return w.slice(0, -2)
+  if (w.endsWith('ami') && w.length > 5) return w.slice(0, -3)
+  if (w.endsWith('ach') && w.length > 5) return w.slice(0, -3)
+  // Generic
   if (w.endsWith('es')  && w.length > 3) return w.slice(0, -2)
   if (w.endsWith('s')   && w.length > 3) return w.slice(0, -1)
   if (w.length >= 6) return w.slice(0, Math.ceil(w.length * 0.8))
@@ -118,11 +110,11 @@ function stemPhrase(t: string): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OPTYMALIZACJA 1 — Pre-kompilowany cache regexów
-// Regex dla "whole word boundary" kompilowany raz, nie przy każdym wywołaniu.
+// Pre-compiled regex cache
 // ─────────────────────────────────────────────────────────────────────────────
 
 const regexCache = new Map<string, RegExp>()
+const MAX_REGEX_CACHE = 300
 
 function getWordBoundaryRegex(phrase: string): RegExp {
   let re = regexCache.get(phrase)
@@ -130,8 +122,7 @@ function getWordBoundaryRegex(phrase: string): RegExp {
     const esc = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     re = new RegExp(`(?:^|\\s)${esc}(?:\\s|$)`)
     regexCache.set(phrase, re)
-    // Ogranicz cache do 200 wpisów (zapobiegaj memory leak przy dużej bazie)
-    if (regexCache.size > 200) {
+    if (regexCache.size > MAX_REGEX_CACHE) {
       const firstKey = regexCache.keys().next().value
       if (firstKey) regexCache.delete(firstKey)
     }
@@ -145,20 +136,21 @@ function wholeWordMatch(spoken: string, phrase: string): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// OPTYMALIZACJA 2 — Pre-normalizowane dane pytania
-// Przechowywane jako MatchData, obliczane RAZ przy zmianie pytania.
+// MatchData — pre-computed per question
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface MatchData {
-  /** Znormalizowane warianty do sprawdzenia (answer + synonyms × stem × noArticles) */
-  phrases:    string[]
-  /** Minimalna długość — early exit jeśli spoken jest za krótki */
-  minLen:     number
+  /** All normalized phrase variants to check */
+  phrases:      string[]
+  /** Single-word phrases as Set for O(1) includes() check on interims */
+  singleWords:  Set<string>
+  /** Minimum phrase length — early exit when spoken is shorter */
+  minLen:       number
 }
 
 /**
- * Zbuduj MatchData z odpowiedzi i synonimów.
- * Wywoływany RAZ przy zmianie pytania — nie przy każdym zdarzeniu mowy.
+ * Build MatchData from answer + synonyms.
+ * Called ONCE per question change — never per speech event.
  */
 export function buildMatchData(answer: string, synonyms: string[] = []): MatchData {
   const all     = [answer, ...synonyms].filter(Boolean)
@@ -168,59 +160,91 @@ export function buildMatchData(answer: string, synonyms: string[] = []): MatchDa
     const n = normalizeText(raw)
     if (!n) continue
 
-    const noArt  = stripArticles(n)
-    const stem   = stemPhrase(n)
+    const noArt     = stripArticles(n)
+    const stem      = stemPhrase(n)
     const noArtStem = stemPhrase(noArt)
 
     phrases.add(n)
-    if (noArt !== n)        phrases.add(noArt)
-    if (stem !== n)         phrases.add(stem)
-    if (noArtStem !== stem) phrases.add(noArtStem)
+    if (noArt !== n)          phrases.add(noArt)
+    if (stem !== n)           phrases.add(stem)
+    if (noArtStem !== stem)   phrases.add(noArtStem)
   }
 
-  // Pre-kompiluj regexy dla wszystkich fraz (side effect — wypełnia regexCache)
+  // Pre-compile regexes
   phrases.forEach(p => getWordBoundaryRegex(p))
 
-  const minLen = Math.min(...[...phrases].map(p => p.length))
+  // Extract single-word phrases for fast substring matching on interims
+  const singleWords = new Set<string>()
+  for (const p of phrases) {
+    if (!p.includes(' ')) singleWords.add(p)
+  }
 
-  return { phrases: [...phrases], minLen }
+  const minLen = phrases.size > 0
+    ? Math.min(...[...phrases].map(p => p.length))
+    : 999
+
+  return { phrases: [...phrases], singleWords, minLen }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Phrase matching — używa pre-skompilowanych regexów
+// Phrase matching — fast path with includes() for interims
 // ─────────────────────────────────────────────────────────────────────────────
 
 function phrasesMatchFast(nSpoken: string, matchData: MatchData, strict: boolean): boolean {
   if (!nSpoken) return false
-  // Early exit — spoken krótszy niż najkrótsza fraza
   if (nSpoken.length < matchData.minLen) return false
 
-  const noArt     = stripArticles(nSpoken)
-  const stem      = strict ? '' : stemPhrase(nSpoken)
-  const noArtStem = strict ? '' : stemPhrase(noArt)
+  const noArt = stripArticles(nSpoken)
 
+  // ── Fast path: single-word substring check (interims + finals) ──
+  // If any expected single-word phrase appears anywhere in the spoken text,
+  // accept it immediately. This catches ASR outputs like "to jest kraków"
+  // where "krakow" is embedded in a longer string.
+  for (const sw of matchData.singleWords) {
+    if (nSpoken === sw || noArt === sw) return true
+    // Substring match — word must appear with word boundaries
+    if (wholeWordMatch(nSpoken, sw)) return true
+    if (noArt !== nSpoken && wholeWordMatch(noArt, sw)) return true
+  }
+
+  // ── Multi-word phrases ──
   for (const phrase of matchData.phrases) {
-    // 1. Exact / whole-word match
+    if (phrase === nSpoken || phrase === noArt) return true
+
+    // Skip single-word phrases (already checked above)
+    if (!phrase.includes(' ')) continue
+
+    // Whole-word boundary match
     if (wholeWordMatch(nSpoken, phrase)) return true
     if (noArt !== nSpoken && wholeWordMatch(noArt, phrase)) return true
 
-    if (strict) continue   // interim: bez fuzzy
+    if (strict) continue  // interims: no fuzzy for multi-word
 
-    // 2. Stem matching (final only)
-    if (stem && wholeWordMatch(stem, phrase))       return true
+    // Stem matching (final only)
+    const stem      = stemPhrase(nSpoken)
+    const noArtStem = stemPhrase(noArt)
+    if (stem && wholeWordMatch(stem, phrase))         return true
     if (noArtStem && wholeWordMatch(noArtStem, phrase)) return true
 
-    // 3. Multi-word: każde słowo frazy obecne w spoken
+    // Multi-word: all phrase words present in spoken (any order)
     const pWords = phrase.split(' ')
-    if (pWords.length >= 2) {
-      const sWords = nSpoken.split(' ')
-      const sStems = strict ? [] : sWords.map(stemWord)
-      const ok = pWords.every(pw => {
-        const ps = stemWord(pw)
-        return sWords.includes(pw)  || sWords.includes(ps)  ||
-               sStems.includes(pw) || sStems.includes(ps)
-      })
-      if (ok) return true
+    const sWords = new Set(nSpoken.split(' '))
+    const sStems = new Set(nSpoken.split(' ').map(stemWord))
+    const ok = pWords.every(pw => {
+      const ps = stemWord(pw)
+      return sWords.has(pw) || sWords.has(ps) || sStems.has(pw) || sStems.has(ps)
+    })
+    if (ok) return true
+  }
+
+  // ── Final-only: stem matching for single words ──
+  if (!strict) {
+    const stem      = stemPhrase(nSpoken)
+    const noArtStem = stemPhrase(noArt)
+    for (const sw of matchData.singleWords) {
+      if (stem === sw || noArtStem === sw) return true
+      if (wholeWordMatch(stem, sw)) return true
+      if (wholeWordMatch(noArtStem, sw)) return true
     }
   }
 
@@ -231,21 +255,14 @@ function phrasesMatchFast(nSpoken: string, matchData: MatchData, strict: boolean
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Szybki wariant isAnswerMatch używający pre-zbudowanego MatchData.
- * Użyj go gdy masz dostęp do matchData (zbudowanego w useEffect przy zmianie pytania).
- * ~10× szybszy niż isAnswerMatch przy wielu synonimach.
- */
+/** Fast variant using pre-built MatchData. ~10× faster than isAnswerMatch. */
 export function isAnswerMatchFast(spoken: string, matchData: MatchData, strict = false): boolean {
   if (!spoken) return false
   const nSpoken = normalizeText(spoken)
   return phrasesMatchFast(nSpoken, matchData, strict)
 }
 
-/**
- * Kompatybilna wersja bez pre-obliczonego MatchData.
- * Zachowana dla wstecznej kompatybilności.
- */
+/** Backward-compatible variant (builds MatchData on every call). */
 export function isAnswerMatch(
   spoken:   string,
   answer:   string,
@@ -255,31 +272,38 @@ export function isAnswerMatch(
   if (!spoken || !answer) return false
   const nSpoken = normalizeText(spoken)
   if (!nSpoken) return false
-  const matchData = buildMatchData(answer, synonyms)
-  return phrasesMatchFast(nSpoken, matchData, strict)
+  return phrasesMatchFast(nSpoken, buildMatchData(answer, synonyms), strict)
 }
 
-/**
- * Komendy pas — rozpoznawane jak w programie "The Floor".
- * Sprawdza czy słowo-klucz jest gdziekolwiek w transkrypcie
- * (początek, koniec, środek, samodzielnie).
- */
+// ─────────────────────────────────────────────────────────────────────────────
+// Pass commands — pre-compiled regex for O(1) check
+// ─────────────────────────────────────────────────────────────────────────────
+
 export const PASS_WORDS = ['pass', 'pas', 'dalej', 'nastepne', 'nastepny',
-  'nastepnie', 'pomijam', 'pomin', 'pomijamy', 'skip', 'przejdz', 'kolejne'] as const
+  'nastepnie', 'pomijam', 'pomin', 'pomijamy', 'skip', 'przejdz', 'kolejne',
+  'pomiń', 'następne', 'następny', 'następnie', 'przejdź'] as const
+
+// Pre-compiled: matches any pass word as a whole word (with boundaries)
+const _passRegex = new RegExp(
+  `(?:^|\\s)(${PASS_WORDS.map(w => normalizeText(w)).filter((v, i, a) => a.indexOf(v) === i).join('|')})(?:\\s|$)`
+)
 
 export function isPassCommand(spoken: string): boolean {
   const n = normalizeText(spoken)
-  return PASS_WORDS.some(w =>
-    n === w ||
-    n.startsWith(w + ' ') ||
-    n.endsWith(' ' + w) ||
-    n.includes(' ' + w + ' ')
-  )
+  if (!n) return false
+  return _passRegex.test(n)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Hook
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** Watchdog interval — detect silently-dead recognition */
+const WATCHDOG_MS      = 4000
+/** Max consecutive transient errors before giving up */
+const MAX_RETRIES      = 3
+/** Delay before retrying after a transient error */
+const RETRY_DELAY_MS   = 500
 
 export function useSpeechRecognition({
   onFinal, onInterim, active, lang = 'pl-PL', restartKey = 0,
@@ -287,16 +311,19 @@ export function useSpeechRecognition({
   const langs    = Array.isArray(lang) ? [...new Set(lang)] : [lang]
   const leapfrog = langs.length > 1
 
-  const onFinalRef    = useRef(onFinal)
-  const onInterimRef  = useRef(onInterim)
-  const activeRef     = useRef(active)
-  const leapfrogIdx   = useRef(0)
-  const recRef        = useRef<SR | null>(null)
-  const timerRef      = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const lastInterim   = useRef('')
-  const stoppedRef    = useRef(false)
-  const SRClassRef    = useRef<(new () => SR) | null>(null)
-  const grammarRef    = useRef<unknown>(null)  // aktywna gramatyka
+  const onFinalRef     = useRef(onFinal)
+  const onInterimRef   = useRef(onInterim)
+  const activeRef      = useRef(active)
+  const leapfrogIdx    = useRef(0)
+  const recRef         = useRef<SR | null>(null)
+  const timerRef       = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const watchdogRef    = useRef<ReturnType<typeof setInterval> | null>(null)
+  const lastInterim    = useRef('')
+  const lastEventTs    = useRef(0)           // timestamp of last onresult/onstart
+  const stoppedRef     = useRef(false)
+  const retriesRef     = useRef(0)
+  const SRClassRef     = useRef<(new () => SR) | null>(null)
+  const grammarRef     = useRef<unknown>(null)
 
   const [listening, setListening] = useState(false)
   const [error, setError]         = useState<string | null>(null)
@@ -305,22 +332,24 @@ export function useSpeechRecognition({
   onInterimRef.current = onInterim
   activeRef.current    = active
 
-  // ── OPTYMALIZACJA 4: SpeechGrammarList ─────────────────────────────────────
-  // Aktualizacja gramatyki przy zmianie pytania. Nowa instancja recognition
-  // zostanie uruchomiona z aktualną gramatyką przy kolejnym restarcie.
+  // ── Grammar hints for Chrome ASR ──────────────────────────────────────────
+
   const updateGrammar = (answer: string, synonyms: string[] = []) => {
     const SRGList = getSRGrammarList()
     if (!SRGList) return
 
     try {
-      const words  = [answer, ...synonyms, ...PASS_WORDS].filter(Boolean)
-        .flatMap(w => {
-          const n = normalizeText(w)
-          return [n, stemPhrase(n)].filter(Boolean)
-        })
-        .filter((v, i, a) => a.indexOf(v) === i)  // deduplicate
+      const seen = new Set<string>()
+      const words: string[] = []
+      for (const w of [answer, ...synonyms, ...PASS_WORDS]) {
+        if (!w) continue
+        const n = normalizeText(w)
+        const s = stemPhrase(n)
+        if (n && !seen.has(n)) { seen.add(n); words.push(n) }
+        if (s && s !== n && !seen.has(s)) { seen.add(s); words.push(s) }
+      }
+      if (words.length === 0) return
 
-      // JSGF grammar format — answers + pass commands
       const jsgf = `#JSGF V1.0; grammar answers; public <answer> = ${words.join(' | ')};`
       const gl   = new SRGList()
       gl.addFromString(jsgf, 1.0)
@@ -330,23 +359,31 @@ export function useSpeechRecognition({
     }
   }
 
-  // ── Build recognition instance ──────────────────────────────────────────────
+  // ── Build recognition instance ────────────────────────────────────────────
+
   function buildRec(l: string): SR {
     const SRC = SRClassRef.current!
     const rec = new SRC()
     rec.lang            = l
     rec.continuous      = true
     rec.interimResults  = true
-    rec.maxAlternatives = 4   // Check more alternatives for faster detection
+    rec.maxAlternatives = 4
 
-    // Podepnij gramatykę jeśli dostępna
     if (grammarRef.current) {
-      try { rec.grammars = grammarRef.current } catch {}
+      try { rec.grammars = grammarRef.current } catch { /* unsupported */ }
     }
 
-    rec.onstart = () => { setListening(true); setError(null); lastInterim.current = '' }
+    rec.onstart = () => {
+      setListening(true)
+      setError(null)
+      lastInterim.current = ''
+      lastEventTs.current = Date.now()
+      retriesRef.current  = 0
+    }
 
     rec.onresult = (e: SREvent) => {
+      lastEventTs.current = Date.now()
+
       for (let i = e.resultIndex; i < e.results.length; i++) {
         const result = e.results[i]
         if (result.isFinal) {
@@ -357,7 +394,7 @@ export function useSpeechRecognition({
             if (t) onFinalRef.current(t)
           }
         } else {
-          // Process ALL interim alternatives — first match wins for speed
+          // Process ALL interim alternatives for fastest detection
           const alts = Math.min(result.length ?? 1, 4)
           for (let a = 0; a < alts; a++) {
             const t = result[a]?.transcript?.trim()
@@ -373,13 +410,25 @@ export function useSpeechRecognition({
     }
 
     rec.onerror = (e: SRError) => {
-      if (e.error === 'no-speech' || e.error === 'aborted') return
-      if (e.error === 'not-allowed') {
-        setError('Brak dostępu do mikrofonu. Zezwól na dostęp w ustawieniach przeglądarki.')
+      if (e.error === 'aborted') return  // intentional stop
+
+      // Transient errors — retry automatically
+      if (e.error === 'no-speech' || e.error === 'audio-capture' || e.error === 'network') {
+        if (e.error === 'network') {
+          setError('Błąd sieci — rozpoznawanie wymaga połączenia z internetem.')
+        }
+        // Auto-retry (up to MAX_RETRIES consecutive failures)
+        if (retriesRef.current < MAX_RETRIES && !stoppedRef.current && activeRef.current) {
+          retriesRef.current++
+          return  // onend will fire and restart
+        }
         return
       }
-      if (e.error === 'network') {
-        setError('Błąd sieci — rozpoznawanie wymaga połączenia z internetem.')
+
+      if (e.error === 'not-allowed') {
+        setError('Brak dostępu do mikrofonu. Zezwól na dostęp w ustawieniach przeglądarki.')
+        stoppedRef.current = true  // don't retry — permission issue
+        setListening(false)
         return
       }
     }
@@ -392,16 +441,15 @@ export function useSpeechRecognition({
       }
 
       if (leapfrog) {
-        // OPTYMALIZACJA 3: Leapfrog — zero gap
         leapfrogIdx.current = (leapfrogIdx.current + 1) % langs.length
         startRec(langs[leapfrogIdx.current])
       } else {
-        // OPTYMALIZACJA 3: Single-lang — 0ms restart (było 100ms)
-        // Chrome potrzebuje jednego tick zanim można wywołać start() ponownie
+        // Zero-gap restart
         if (timerRef.current) clearTimeout(timerRef.current)
+        const delay = retriesRef.current > 0 ? RETRY_DELAY_MS : 0
         timerRef.current = setTimeout(() => {
           if (!stoppedRef.current && activeRef.current) startRec(l)
-        }, 0)
+        }, delay)
       }
     }
 
@@ -416,12 +464,13 @@ export function useSpeechRecognition({
     }
     const rec = buildRec(l)
     recRef.current = rec
-    try { rec.start() } catch { /* already starting — ignore */ }
+    try { rec.start() } catch { /* already starting */ }
   }
 
   function stopAll() {
     stoppedRef.current = true
-    if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null }
+    if (timerRef.current)   { clearTimeout(timerRef.current);   timerRef.current   = null }
+    if (watchdogRef.current){ clearInterval(watchdogRef.current); watchdogRef.current = null }
     if (recRef.current) {
       recRef.current.onend = null
       recRef.current.abort()
@@ -432,8 +481,23 @@ export function useSpeechRecognition({
 
   function startAll() {
     stoppedRef.current  = false
+    retriesRef.current  = 0
     leapfrogIdx.current = 0
+    lastEventTs.current = Date.now()
     startRec(langs[0])
+
+    // ── Watchdog: detect silently-dead recognition ──
+    // Chrome sometimes drops recognition without firing onend.
+    // If no events for WATCHDOG_MS, force restart.
+    if (watchdogRef.current) clearInterval(watchdogRef.current)
+    watchdogRef.current = setInterval(() => {
+      if (stoppedRef.current || !activeRef.current) return
+      if (Date.now() - lastEventTs.current > WATCHDOG_MS && !listening) {
+        console.warn('[Speech] Watchdog: recognition appears dead, restarting…')
+        lastEventTs.current = Date.now()
+        startRec(langs[leapfrogIdx.current])
+      }
+    }, WATCHDOG_MS)
   }
 
   useEffect(() => {
@@ -445,7 +509,7 @@ export function useSpeechRecognition({
     SRClassRef.current = SRC
     if (active) { startAll() } else { stopAll() }
     return () => stopAll()
-  // restartKey celowo w deps — zmiana wartości wymusza restart recognition
+  // restartKey in deps — changing it forces restart
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, langs.join(','), restartKey])
 
