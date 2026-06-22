@@ -70,6 +70,11 @@ export default function UserProfile() {
   const level   = Math.floor(user.xp / 100) + 1
   const xpPct   = (user.xp % 100)
 
+  // `tabStyle`/`btnStyle` are style factories (depend on runtime state) and so
+  // live outside the static style map, which stays strictly typed.
+  const tabStyle = (active: boolean): React.CSSProperties => ({ flex:1, padding:'10px 0', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:2, background:active?'rgba(212,175,55,0.15)':'transparent', color:active?'#D4AF37':'rgba(255,255,255,0.3)', border:'none', cursor:'pointer', transition:'all 0.2s' })
+  const btnStyle = (accent = '#D4AF37'): React.CSSProperties => ({ padding:'10px 20px', borderRadius:8, background:`${accent}20`, border:`1px solid ${accent}66`, color:accent, fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.85rem', letterSpacing:3, cursor:'pointer' })
+
   const S: Record<string, React.CSSProperties> = {
     page: { minHeight:'100vh', background:'#080808', fontFamily:"'Montserrat',sans-serif", color:'#fff', padding:'24px 20px' },
     inner: { maxWidth:640, margin:'0 auto' },
@@ -78,8 +83,6 @@ export default function UserProfile() {
     statBox: { background:'rgba(255,255,255,0.04)', borderRadius:10, padding:'16px', textAlign:'center' as const, flex:'1' },
     statVal: { fontFamily:"'Bebas Neue',sans-serif", fontSize:'2.2rem', color:'#D4AF37', letterSpacing:2 },
     statLbl: { fontSize:'0.65rem', letterSpacing:2, color:'rgba(255,255,255,0.35)', marginTop:2 },
-    tab: (active: boolean): React.CSSProperties => ({ flex:1, padding:'10px 0', fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.9rem', letterSpacing:2, background:active?'rgba(212,175,55,0.15)':'transparent', color:active?'#D4AF37':'rgba(255,255,255,0.3)', border:'none', cursor:'pointer', transition:'all 0.2s' }),
-    btn: (accent = '#D4AF37'): React.CSSProperties => ({ padding:'10px 20px', borderRadius:8, background:`${accent}20`, border:`1px solid ${accent}66`, color:accent, fontFamily:"'Bebas Neue',sans-serif", fontSize:'0.85rem', letterSpacing:3, cursor:'pointer' }),
     inp: { background:'rgba(255,255,255,0.05)', border:'1px solid rgba(255,255,255,0.12)', borderRadius:8, color:'#fff', fontFamily:"'Bebas Neue',sans-serif", letterSpacing:3, fontSize:'1rem', padding:'10px 14px', outline:'none', flex:1 } as React.CSSProperties,
   }
 
@@ -118,7 +121,7 @@ export default function UserProfile() {
               <div style={{ height:'100%', width:`${xpPct}%`, background:'linear-gradient(90deg,#D4AF37,#FFD700)', borderRadius:2, transition:'width 0.6s' }} />
             </div>
           </div>
-          <button onClick={handleLogout} style={{ ...S.btn('rgba(255,255,255,0.4)'), fontSize:'0.75rem' }}>WYLOGUJ</button>
+          <button onClick={handleLogout} style={{ ...btnStyle('rgba(255,255,255,0.4)'), fontSize:'0.75rem' }}>WYLOGUJ</button>
         </div>
 
         {msg    && <div style={{ padding:'10px 14px', background:'rgba(34,197,94,0.1)', border:'1px solid rgba(34,197,94,0.3)', borderRadius:8, color:'#4ade80', fontSize:'0.8rem', marginBottom:12 }}>✅ {msg}</div>}
@@ -155,9 +158,9 @@ export default function UserProfile() {
                 <div style={{ borderTop:'1px solid rgba(255,255,255,0.08)', paddingTop:14, marginBottom:14 }}>
                   <div style={{ fontSize:'0.72rem', letterSpacing:2, color:'rgba(255,255,255,0.3)', marginBottom:8 }}>LUB WŁASNE ZDJĘCIE</div>
                   <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleFileUpload} />
-                  <button onClick={() => fileRef.current?.click()} style={S.btn()}>📷 WGRAJ ZDJĘCIE</button>
+                  <button onClick={() => fileRef.current?.click()} style={btnStyle()}>📷 WGRAJ ZDJĘCIE</button>
                 </div>
-                <button onClick={() => setPickAvatar(false)} style={{ ...S.btn('rgba(255,255,255,0.4)'), fontSize:'0.75rem' }}>ZAMKNIJ</button>
+                <button onClick={() => setPickAvatar(false)} style={{ ...btnStyle('rgba(255,255,255,0.4)'), fontSize:'0.75rem' }}>ZAMKNIJ</button>
               </div>
             </div>
           )
@@ -166,7 +169,7 @@ export default function UserProfile() {
         {/* Tabs */}
         <div style={{ display:'flex', border:'1px solid rgba(255,255,255,0.08)', borderRadius:8, overflow:'hidden', marginBottom:16 }}>
           {(['stats','history','settings'] as const).map(t => (
-            <button key={t} style={S.tab(tab===t)} onClick={() => setTab(t)}>
+            <button key={t} style={tabStyle(tab===t)} onClick={() => setTab(t)}>
               {t==='stats'?'📊 STATYSTYKI':t==='history'?'📋 HISTORIA':'⚙️ USTAWIENIA'}
             </button>
           ))}
@@ -226,19 +229,19 @@ export default function UserProfile() {
               {editNick ? (
                 <div style={{ display:'flex', gap:8 }}>
                   <input style={S.inp} value={nickInput} maxLength={20} onChange={e => setNickInput(e.target.value.toUpperCase())} onKeyDown={e => e.key==='Enter' && handleNickSave()} autoFocus />
-                  <button onClick={handleNickSave} disabled={busy} style={S.btn()}>{busy?'…':'ZAPISZ'}</button>
-                  <button onClick={() => setEditNick(false)} style={S.btn('rgba(255,255,255,0.4)')}>✕</button>
+                  <button onClick={handleNickSave} disabled={busy} style={btnStyle()}>{busy?'…':'ZAPISZ'}</button>
+                  <button onClick={() => setEditNick(false)} style={btnStyle('rgba(255,255,255,0.4)')}>✕</button>
                 </div>
               ) : (
-                <button onClick={() => { setEditNick(true); setNickInput(user.username); clearError() }} style={S.btn()}>✏️ ZMIEŃ NICK</button>
+                <button onClick={() => { setEditNick(true); setNickInput(user.username); clearError() }} style={btnStyle()}>✏️ ZMIEŃ NICK</button>
               )}
             </div>
             <div style={{ borderTop:'1px solid rgba(255,255,255,0.06)', paddingTop:20 }}>
               <div style={{ fontSize:'0.72rem', letterSpacing:2, color:'rgba(255,255,255,0.4)', marginBottom:10 }}>AWATAR</div>
-              <button onClick={() => setPickAvatar(true)} style={S.btn()}>🎭 ZMIEŃ AWATAR</button>
+              <button onClick={() => setPickAvatar(true)} style={btnStyle()}>🎭 ZMIEŃ AWATAR</button>
             </div>
             <div style={{ borderTop:'1px solid rgba(255,255,255,0.06)', paddingTop:20, marginTop:20 }}>
-              <button onClick={() => navigate('/ranking')} style={S.btn('#818cf8')}>🏆 RANKING GRACZY</button>
+              <button onClick={() => navigate('/ranking')} style={btnStyle('#818cf8')}>🏆 RANKING GRACZY</button>
             </div>
           </div>
         )}

@@ -132,7 +132,7 @@ function parseTileCategories(value: unknown): string[] {
 		try {
 			const parsed = JSON.parse(value)
 			if (Array.isArray(parsed)) return parsed.filter((v: unknown) => typeof v === 'string')
-		} catch {}
+		} catch { /* ignore */ }
 	}
 	return []
 }
@@ -149,7 +149,7 @@ function parsePlayers(value: unknown): [PlayerSettings, PlayerSettings] | null {
 				{ name: arr[1].name, color: arr[1].color ?? DEFAULT_PLAYERS[1].color },
 			]
 		}
-	} catch {}
+	} catch { /* ignore */ }
 	return null
 }
 
@@ -206,7 +206,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 							const p = parsePlayers(ls)
 							if (p) players = p
 						}
-					} catch {}
+					} catch { /* ignore */ }
 				}
 
 				// Aktualizuj SoundEngine
@@ -223,7 +223,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 					const p = parsePlayers(ls)
 					if (p) set({ players: p })
 				}
-			} catch {}
+			} catch { /* ignore */ }
 			console.warn('[Config] Błąd Supabase, używam defaults:', e)
 		}
 		set({ loading: false })
@@ -259,7 +259,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 		// Zapis do localStorage (natychmiastowy cache)
 		try {
 			localStorage.setItem(LS_PLAYERS_KEY, JSON.stringify(currentPlayers))
-		} catch {}
+		} catch { /* ignore */ }
 
 		// Zapis do Supabase (trwały, synchronizowany między urządzeniami)
 		try {
@@ -294,7 +294,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 		await supabase.from('config').upsert(rows)
 		try {
 			localStorage.removeItem(LS_PLAYERS_KEY)
-		} catch {}
+		} catch { /* ignore */ }
 		invalidateCache(CACHE_KEY_CFG)
 		SoundEngine.init(DEFAULTS.MUSIC_VOLUME, DEFAULTS.SFX_VOLUME)
 		set({ config: DEFAULTS, players: DEFAULT_PLAYERS, tileCategories: [] })

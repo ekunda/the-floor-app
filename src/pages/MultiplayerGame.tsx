@@ -286,13 +286,12 @@ export default function MultiplayerGame() {
   const { config } = useConfigStore()
 
   const {
-    role, status, playerName, opponentName, opponentAvatar,
+    role, status, playerName, opponentName,
     tiles, cursor, gridCols, gridRows, categories,
     duel, currentQuestion, feedback,
     winner, countdown, toastText, hostScore, guestScore, gameResult,
     currentPicker,
     moveCursor, startChallenge, startFight, markCorrect, pass, closeDuel, leaveRoom,
-    showToast, showFeedback,
   } = useMultiplayerStore()
 
   const [speechEnabled, setSpeechEnabled] = useState(true) // ON by default
@@ -494,11 +493,6 @@ export default function MultiplayerGame() {
     return () => clearTimeout(t)
   }, [speechActive, listening, restartKey])
 
-  const handleClose = () => {
-    closeDuel()
-    setExitConfirm(false)
-  }
-
   const handleLeave = async () => {
     await leaveRoom()
     navigate('/')
@@ -507,8 +501,6 @@ export default function MultiplayerGame() {
   const handleExitRequest = () => setExitConfirm(true)
   const handleExitConfirm = async () => { await handleLeave() }
   const handleExitCancel  = () => setExitConfirm(false)
-
-  const volumeFactor = (base: number) => base * (config.SOUND_VOLUME / 100)
 
   // Image URL
   const imageUrl = currentQuestion?.image_path

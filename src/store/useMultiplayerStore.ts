@@ -16,6 +16,16 @@ import {
   Category, MPActivePlayer, MPDuelState, MPEvent,
   MPGameState, MPRole, MPStatus, Question, SpeechLang, Tile, TileOwner,
 } from '../types'
+import { evaluateBoardOutcome, shuffle } from '../domain/board'
+import {
+  applyPassPenalty, nextPickerAfterRound, opponentOf, ownerForWinner,
+  resolveRound, winnerAfterTimeout,
+} from '../domain/duel'
+import { pickNextQuestionId } from '../domain/questions'
+import { applyMatchResult, playerXpDelta, xpRewards } from '../domain/xp'
+import {
+  ensureProfileOnline, fetchMatchStats, recordGameHistory, saveMatchStats,
+} from '../lib/profileService'
 import { getBoardDimensions, useConfigStore } from './useConfigStore'
 import { useAuthStore } from './useAuthStore'
 
@@ -63,15 +73,6 @@ function effectivePlayerAvatar(): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
 function generateCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
@@ -171,15 +172,9 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   }
 
   function pickNext(duel: MPDuelState): { questionId: string; usedIds: string[] } {
-    const cat   = get().categories.find(c => c.id === duel.categoryId)
-    const qs    = cat?.questions ?? []
-    let used    = [...duel.usedQuestionIds]
-    if (used.length >= qs.length) used = []
-    const avail = qs.filter(q => !used.includes(q.id))
-    const pool  = avail.length > 0 ? avail : qs
-    const q     = pool[Math.floor(Math.random() * pool.length)]
-    if (q) used.push(q.id)
-    return { questionId: q?.id ?? '', usedIds: used }
+    const cat = get().categories.find(c => c.id === duel.categoryId)
+    const qs  = cat?.questions ?? []
+    return pickNextQuestionId(qs.map(q => q.id), duel.usedQuestionIds)
   }
 
   function buildTiles(cats: (Category & { questions: Question[] })[], categoriesCount?: number) {
@@ -213,7 +208,14 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     if (patch.host_score  !== undefined) upd.host_score  = patch.host_score
     if (patch.guest_score !== undefined) upd.guest_score = patch.guest_score
     if (patch.status      !== undefined) upd.status      = patch.status
-    await supabase.from('game_rooms').update(upd).eq('id', roomId).catch(e => console.warn('[MP] writeDB error:', e))
+    // NB: a Supabase query builder is a thenable but not a real Promise — it has
+    // no `.catch`, so we must await inside try/catch rather than chaining .catch.
+    try {
+      const { error } = await supabase.from('game_rooms').update(upd).eq('id', roomId)
+      if (error) console.warn('[MP] writeDB error:', error)
+    } catch (e) {
+      console.warn('[MP] writeDB error:', e)
+    }
   }
 
   // ── XP ─────────────────────────────────────────────────────────────────────
@@ -225,44 +227,22 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     forfeit = false,
   ) {
     try {
-      const xpWin  = forfeit ? Math.round(categoriesCount * 1.5) : categoriesCount
-      const xpLoss = forfeit ? -Math.floor(categoriesCount / 2) : 0
-      const xpDraw = Math.floor(categoriesCount / 2)
+      const rewards = xpRewards(categoriesCount, forfeit)
+      const stats   = await fetchMatchStats(hostId, guestId)
+      if (!stats) { console.warn('[MP] awardXP: profile missing'); return }
 
-      const [{ data: hp }, { data: gp }] = await Promise.all([
-        supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', hostId).maybeSingle(),
-        supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', guestId).maybeSingle(),
-      ])
-      if (!hp || !gp) { console.warn('[MP] awardXP: profile missing'); return }
-
-      let hXp = hp.xp ?? 0, hW = hp.wins ?? 0, hL = hp.losses ?? 0, hStr = hp.win_streak ?? 0, hBest = hp.best_streak ?? 0
-      let gXp = gp.xp ?? 0, gW = gp.wins ?? 0, gL = gp.losses ?? 0, gStr = gp.win_streak ?? 0, gBest = gp.best_streak ?? 0
-
-      if (winnerRole === 'host') {
-        hXp += xpWin; hW++; hStr++; hBest = Math.max(hBest, hStr)
-        gXp = Math.max(0, gXp + xpLoss); gL++; gStr = 0
-      } else if (winnerRole === 'guest') {
-        gXp += xpWin; gW++; gStr++; gBest = Math.max(gBest, gStr)
-        hXp = Math.max(0, hXp + xpLoss); hL++; hStr = 0
-      } else {
-        hXp += xpDraw; gXp += xpDraw; hStr = 0; gStr = 0
-      }
-
-      await Promise.all([
-        supabase.from('profiles').update({ xp: hXp, wins: hW, losses: hL, win_streak: hStr, best_streak: hBest, updated_at: new Date().toISOString() }).eq('id', hostId),
-        supabase.from('profiles').update({ xp: gXp, wins: gW, losses: gL, win_streak: gStr, best_streak: gBest, updated_at: new Date().toISOString() }).eq('id', guestId),
-      ])
+      const next = applyMatchResult(stats.host, stats.guest, winnerRole, rewards)
+      await saveMatchStats(hostId, next.host, guestId, next.guest)
 
       if (winnerRole !== 'draw') {
-        const winnerId = winnerRole === 'host' ? hostId : guestId
-        const loserId  = winnerRole === 'host' ? guestId : hostId
+        const hostWon = winnerRole === 'host'
         const { hostScore, guestScore } = get()
-        await supabase.from('game_history').insert({
-          winner_id: winnerId, loser_id: loserId,
-          winner_score: winnerRole === 'host' ? hostScore : guestScore,
-          loser_score:  winnerRole === 'host' ? guestScore : hostScore,
-          is_draw: false,
-        }).select()
+        await recordGameHistory({
+          winnerId:    hostWon ? hostId : guestId,
+          loserId:     hostWon ? guestId : hostId,
+          winnerScore: hostWon ? hostScore : guestScore,
+          loserScore:  hostWon ? guestScore : hostScore,
+        })
       }
 
       useAuthStore.getState().refreshProfile()
@@ -273,19 +253,10 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
   async function ensureProfile(id: string, username: string, avatar: string) {
     const authUser = useAuthStore.getState().user
-    if (authUser && authUser.id === id) {
-      await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', id)
-      return
-    }
-    await supabase.from('profiles').upsert(
-      { id, username, avatar, xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0, status: 'online', last_seen: new Date().toISOString(), updated_at: new Date().toISOString() },
-      { onConflict: 'id', ignoreDuplicates: true }
-    )
+    await ensureProfileOnline(id, username, avatar, !!authUser && authUser.id === id)
   }
 
   // ── Timer (HOST only) ──────────────────────────────────────────────────────
-
-  let _seq = 0  // event sequence counter to prevent duplicate processing
 
   function startTicker() {
     stopTicker()
@@ -323,31 +294,24 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   // ── State transitions (HOST only) ─────────────────────────────────────────
 
   function onTimeout(duel: MPDuelState) {
-    const loser:  MPActivePlayer = duel.active
-    const winner: MPActivePlayer = loser === 'host' ? 'guest' : 'host'
+    const winner = winnerAfterTimeout(duel.active)
     get().showFeedback('⏰ Czas minął!', 'timeout')
     broadcast({ type: 'feedback', text: '⏰ Czas minął!', feedbackType: 'timeout' })
     setTimeout(() => hostEndRound(winner, duel), 1200)
   }
 
   function hostEndRound(winner: MPActivePlayer | 'draw', duel: MPDuelState) {
-    const { tiles } = get()
-    const owner: TileOwner = winner === 'host' ? 'gold' : winner === 'guest' ? 'silver' : tiles[duel.tileIdx]?.owner ?? 'neutral'
-    const newTiles = tiles.map((t, i) => i === duel.tileIdx ? { ...t, owner } : t)
-    const hs = newTiles.filter(t => t.owner === 'gold').length
-    const gs = newTiles.filter(t => t.owner === 'silver').length
-    // Alternate picker: winner of this round's opponent picks next
-    const nextPicker: MPActivePlayer = winner === 'host' ? 'guest' : winner === 'guest' ? 'host' : (get().currentPicker === 'host' ? 'guest' : 'host')
-    set({ tiles: newTiles, winner, hostScore: hs, guestScore: gs, currentPicker: nextPicker })
-    broadcast({ type: 'round_end', winner, tileIdx: duel.tileIdx, hostScore: hs, guestScore: gs })
-    writeDB({ tiles: newTiles, cursor: get().cursor, host_score: hs, guest_score: gs })
+    const { tiles, currentPicker } = get()
+    const r = resolveRound(tiles, duel.tileIdx, winner, currentPicker)
+    set({ tiles: r.tiles, winner, hostScore: r.hostScore, guestScore: r.guestScore, currentPicker: r.nextPicker })
+    broadcast({ type: 'round_end', winner, tileIdx: duel.tileIdx, hostScore: r.hostScore, guestScore: r.guestScore })
+    writeDB({ tiles: r.tiles, cursor: get().cursor, host_score: r.hostScore, guest_score: r.guestScore })
   }
 
   function hostAdvanceAfterCorrect(who: MPActivePlayer) {
     const { duel } = get()
     if (!duel) return
     stopTicker()
-    _seq++
     const ans = get().currentQuestion?.answer ?? '???'
     get().showFeedback(`✓ ${ans}`, who === get().role ? 'correct' : 'voice')
     broadcast({ type: 'correct', player: who, answer: ans })
@@ -356,7 +320,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     setTimeout(() => {
       const { duel } = get()
       if (!duel) return
-      const next: MPActivePlayer = who === 'host' ? 'guest' : 'host'
+      const next = opponentOf(who)
       const { questionId, usedIds } = pickNext(duel)
       const q = resolveQ(questionId)
       const updated = { ...duel, active: next, questionId, usedQuestionIds: usedIds, paused: false }
@@ -370,10 +334,9 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const { duel } = get()
     if (!duel) return
     stopTicker()
-    _seq++
     const ans = get().currentQuestion?.answer ?? '???'
     const key = who === 'host' ? 'timerHost' : 'timerGuest'
-    const pen = Math.max(0, duel[key] - get().gameSettings.passPenalty)
+    const pen = applyPassPenalty(duel[key], get().gameSettings.passPenalty)
     get().showFeedback(`⏱ PAS · ${ans}`, 'pass')
     broadcast({ type: 'pass', player: who, answer: ans })
 
@@ -392,23 +355,20 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   }
 
   function hostCheckGameEnd(tiles: Tile[]): boolean {
-    const total  = tiles.length
-    const gold   = tiles.filter(t => t.owner === 'gold').length
-    const silver = tiles.filter(t => t.owner === 'silver').length
-    const winAt  = Math.ceil(total * 0.75)
-    if (gold < winAt && silver < winAt) return false
+    const { isOver, gold, silver, winner } = evaluateBoardOutcome(tiles)
+    if (!isOver) return false
 
-    const winnerRole: MPActivePlayer | 'draw' = gold > silver ? 'host' : silver > gold ? 'guest' : 'draw'
+    // Board outcome is decided in tile colours; map gold→host, silver→guest.
+    const winnerRole: MPActivePlayer | 'draw' =
+      winner === 'gold' ? 'host' : winner === 'silver' ? 'guest' : 'draw'
     const { opponentId, gameSettings } = get()
     const hostId  = effectivePlayerId()
     const guestId = opponentId ?? ''
 
     const cc = gameSettings.categoriesCount
-    const xpWin  = cc
-    const xpLoss = 0
-    const xpDraw = Math.floor(cc / 2)
-    const hostXpDelta  = winnerRole === 'host' ? xpWin : winnerRole === 'guest' ? xpLoss : xpDraw
-    const guestXpDelta = winnerRole === 'guest' ? xpWin : winnerRole === 'host' ? xpLoss : xpDraw
+    const rewards = xpRewards(cc)
+    const hostXpDelta  = playerXpDelta('host',  winnerRole, rewards)
+    const guestXpDelta = playerXpDelta('guest', winnerRole, rewards)
 
     stopTicker()
     clearCountdown()
@@ -528,12 +488,16 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
       case 'round_end': {
         if (role === 'guest') {
-          const { tiles } = get()
-          const owner: TileOwner = ev.winner === 'host' ? 'gold' : ev.winner === 'guest' ? 'silver' : tiles[ev.tileIdx]?.owner ?? 'neutral'
+          const { tiles, currentPicker } = get()
+          // Recolour the tile + advance the picker with the same rules the host
+          // used; scores are authoritative from the host, so take them verbatim.
+          const owner = ownerForWinner(ev.winner, tiles[ev.tileIdx]?.owner ?? 'neutral')
           const newTiles = ev.tileIdx >= 0 ? tiles.map((t, i) => i === ev.tileIdx ? { ...t, owner } : t) : tiles
-          // Alternate picker for guest
-          const np: MPActivePlayer = ev.winner === 'host' ? 'guest' : ev.winner === 'guest' ? 'host' : (get().currentPicker === 'host' ? 'guest' : 'host')
-          set({ tiles: newTiles, winner: ev.winner, hostScore: ev.hostScore, guestScore: ev.guestScore, currentPicker: np })
+          set({
+            tiles: newTiles, winner: ev.winner,
+            hostScore: ev.hostScore, guestScore: ev.guestScore,
+            currentPicker: nextPickerAfterRound(ev.winner, currentPicker),
+          })
         } else {
           const { duel } = get()
           if (duel) set({ duel: { ...duel, paused: true } })
@@ -582,7 +546,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         clearCountdown()
         get().showToast('🚪 Przeciwnik opuścił pokój')
         const { status: curStatus, opponentId, gameSettings: gsCur, role: curRole, tiles: curTiles } = get()
-        const forfeitXpWin = Math.round(gsCur.categoriesCount * 1.5)
+        const forfeitXpWin = xpRewards(gsCur.categoriesCount, true).win
         if (curStatus === 'playing' && curRole === 'guest' && opponentId) {
           awardXP(opponentId, effectivePlayerId(), 'guest', gsCur.categoriesCount, true).catch(() => {})
         }
@@ -785,7 +749,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
         setTimeout(() => broadcast({ type: 'opponent_name', name: playerName, avatar: effectivePlayerAvatar() }), 500)
         return true
-      } catch (e) {
+      } catch {
         set({ status: 'idle', error: 'Błąd połączenia' })
         return false
       }

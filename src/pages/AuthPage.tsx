@@ -6,7 +6,7 @@ type Tab = 'login' | 'register'
 
 export default function AuthPage() {
   const navigate = useNavigate()
-  const { login, register, loading, error, clearError } = useAuthStore()
+  const { login, register, error, clearError } = useAuthStore()
 
   const [tab, setTab]           = useState<Tab>('login')
   const [email, setEmail]       = useState('')

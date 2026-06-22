@@ -131,7 +131,7 @@ export const AdminInput = forwardRef<HTMLInputElement, AdminInputProps>(function
 // ══════════════════════════════════════════════════════════════════════════════
 // AdminSelect — select z dark-theme option
 // ══════════════════════════════════════════════════════════════════════════════
-export interface AdminSelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
+export interface AdminSelectProps extends Omit<React.SelectHTMLAttributes<HTMLSelectElement>, 'size'> {
   options: Array<{ value: string | number; label: string }>
   size?: Size
 }
