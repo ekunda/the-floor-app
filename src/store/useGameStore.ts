@@ -10,44 +10,15 @@
 import { create } from 'zustand'
 import { getCachedStale, setCached, supabase } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
-import { Category, DuelState, GameStats, Question, Tile, TileOwner } from '../types'
+import { Category, DuelState, Question, Tile, TileOwner } from '../types'
+import { computeStats, shuffle } from '../domain/board'
+import { pickNextQuestionId } from '../domain/questions'
+import { CATEGORY_EMOJI, getCatEmoji } from '../domain/emoji'
 import { getBoardDimensions, useConfigStore } from './useConfigStore'
 
-export const CATEGORY_EMOJI: Record<string, string> = {
-  zwierzęta: '🐶', jedzenie: '🍕', filmy: '🎬', sport: '⚽', muzyka: '🎵',
-  geografia: '🌍', 'miasta polski': '🏙', zawody: '💼', marki: '🏷', owoce: '🍎',
-  warzywa: '🥕', napoje: '🥤', pojazdy: '🚗', ubrania: '👕',
-  'przybory szkolne': '✏', 'kraje europy': '🌐', 'bohaterowie bajek': '🧸', narzędzia: '🔧',
-}
-
-export function getCatEmoji(name: string, customEmoji?: string): string {
-  if (customEmoji && customEmoji !== '🎯') return customEmoji
-  const lc = name.toLowerCase()
-  for (const [key, emoji] of Object.entries(CATEGORY_EMOJI)) {
-    if (lc.includes(key)) return emoji
-  }
-  return '🎯'
-}
-
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
-export function computeStats(tiles: Tile[]): GameStats {
-  const gold   = tiles.filter(t => t.owner === 'gold').length
-  const silver = tiles.filter(t => t.owner === 'silver').length
-  const total  = tiles.length
-  return {
-    goldTiles: gold, silverTiles: silver, totalTiles: total,
-    goldPct:   total > 0 ? Math.round((gold   / total) * 100) : 0,
-    silverPct: total > 0 ? Math.round((silver / total) * 100) : 0,
-  }
-}
+// Re-exported for existing consumers (Board.tsx, Game.tsx) — the canonical
+// definitions now live in src/domain.
+export { CATEGORY_EMOJI, getCatEmoji, computeStats }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })[] {
@@ -392,12 +363,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const { duel } = get()
     if (!duel) return null
     const { questions, usedIds } = duel
-    if (usedIds.size >= questions.length) usedIds.clear()
-    let q: Question | undefined, attempts = 0
-    do { q = questions[Math.floor(Math.random() * questions.length)]; attempts++ }
-    while (usedIds.has(q?.id ?? '') && attempts < questions.length * 3)
-    if (q) usedIds.add(q.id)
-    return q ?? null
+    const pick = pickNextQuestionId(questions.map(q => q.id), [...usedIds])
+    if (!pick.questionId) return null
+    // duel.usedIds is a Set carried in store state — keep it in sync in place.
+    usedIds.clear()
+    pick.usedIds.forEach(id => usedIds.add(id))
+    return questions.find(q => q.id === pick.questionId) ?? null
   },
 
   endDuelWithWinner: (winnerNum) => {

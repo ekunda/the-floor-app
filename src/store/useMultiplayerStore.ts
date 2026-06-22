@@ -16,6 +16,8 @@ import {
   Category, MPActivePlayer, MPDuelState, MPEvent,
   MPGameState, MPRole, MPStatus, Question, SpeechLang, Tile, TileOwner,
 } from '../types'
+import { evaluateBoardOutcome, shuffle } from '../domain/board'
+import { pickNextQuestionId } from '../domain/questions'
 import { getBoardDimensions, useConfigStore } from './useConfigStore'
 import { useAuthStore } from './useAuthStore'
 
@@ -63,15 +65,6 @@ function effectivePlayerAvatar(): string {
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
-function shuffle<T>(arr: T[]): T[] {
-  const a = [...arr]
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1))
-    ;[a[i], a[j]] = [a[j], a[i]]
-  }
-  return a
-}
-
 function generateCode(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
   let code = ''
@@ -171,15 +164,9 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   }
 
   function pickNext(duel: MPDuelState): { questionId: string; usedIds: string[] } {
-    const cat   = get().categories.find(c => c.id === duel.categoryId)
-    const qs    = cat?.questions ?? []
-    let used    = [...duel.usedQuestionIds]
-    if (used.length >= qs.length) used = []
-    const avail = qs.filter(q => !used.includes(q.id))
-    const pool  = avail.length > 0 ? avail : qs
-    const q     = pool[Math.floor(Math.random() * pool.length)]
-    if (q) used.push(q.id)
-    return { questionId: q?.id ?? '', usedIds: used }
+    const cat = get().categories.find(c => c.id === duel.categoryId)
+    const qs  = cat?.questions ?? []
+    return pickNextQuestionId(qs.map(q => q.id), duel.usedQuestionIds)
   }
 
   function buildTiles(cats: (Category & { questions: Question[] })[], categoriesCount?: number) {
@@ -213,7 +200,14 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     if (patch.host_score  !== undefined) upd.host_score  = patch.host_score
     if (patch.guest_score !== undefined) upd.guest_score = patch.guest_score
     if (patch.status      !== undefined) upd.status      = patch.status
-    await supabase.from('game_rooms').update(upd).eq('id', roomId).catch(e => console.warn('[MP] writeDB error:', e))
+    // NB: a Supabase query builder is a thenable but not a real Promise — it has
+    // no `.catch`, so we must await inside try/catch rather than chaining .catch.
+    try {
+      const { error } = await supabase.from('game_rooms').update(upd).eq('id', roomId)
+      if (error) console.warn('[MP] writeDB error:', error)
+    } catch (e) {
+      console.warn('[MP] writeDB error:', e)
+    }
   }
 
   // ── XP ─────────────────────────────────────────────────────────────────────
@@ -285,8 +279,6 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
   // ── Timer (HOST only) ──────────────────────────────────────────────────────
 
-  let _seq = 0  // event sequence counter to prevent duplicate processing
-
   function startTicker() {
     stopTicker()
     tickerInterval = setInterval(() => {
@@ -347,7 +339,6 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const { duel } = get()
     if (!duel) return
     stopTicker()
-    _seq++
     const ans = get().currentQuestion?.answer ?? '???'
     get().showFeedback(`✓ ${ans}`, who === get().role ? 'correct' : 'voice')
     broadcast({ type: 'correct', player: who, answer: ans })
@@ -370,7 +361,6 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const { duel } = get()
     if (!duel) return
     stopTicker()
-    _seq++
     const ans = get().currentQuestion?.answer ?? '???'
     const key = who === 'host' ? 'timerHost' : 'timerGuest'
     const pen = Math.max(0, duel[key] - get().gameSettings.passPenalty)
@@ -392,13 +382,12 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   }
 
   function hostCheckGameEnd(tiles: Tile[]): boolean {
-    const total  = tiles.length
-    const gold   = tiles.filter(t => t.owner === 'gold').length
-    const silver = tiles.filter(t => t.owner === 'silver').length
-    const winAt  = Math.ceil(total * 0.75)
-    if (gold < winAt && silver < winAt) return false
+    const { isOver, gold, silver, winner } = evaluateBoardOutcome(tiles)
+    if (!isOver) return false
 
-    const winnerRole: MPActivePlayer | 'draw' = gold > silver ? 'host' : silver > gold ? 'guest' : 'draw'
+    // Board outcome is decided in tile colours; map gold→host, silver→guest.
+    const winnerRole: MPActivePlayer | 'draw' =
+      winner === 'gold' ? 'host' : winner === 'silver' ? 'guest' : 'draw'
     const { opponentId, gameSettings } = get()
     const hostId  = effectivePlayerId()
     const guestId = opponentId ?? ''
@@ -785,7 +774,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
         setTimeout(() => broadcast({ type: 'opponent_name', name: playerName, avatar: effectivePlayerAvatar() }), 500)
         return true
-      } catch (e) {
+      } catch {
         set({ status: 'idle', error: 'Błąd połączenia' })
         return false
       }

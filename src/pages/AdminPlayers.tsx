@@ -528,7 +528,7 @@ export default function AdminPlayers() {
                   <label style={{ display: 'block', fontSize: '0.65rem', letterSpacing: 2, color: T.textDim2, marginBottom: 5 }}>{l}</label>
                   <AdminInput
                     type="number" min={0}
-                    value={(editVals as Record<string, number | string>)[k] as number}
+                    value={(editVals as unknown as Record<string, number | string>)[k] as number}
                     onChange={e => setEditVals(v => v ? { ...v, [k]: Number(e.target.value) } : v)}
                     size="sm"
                   />

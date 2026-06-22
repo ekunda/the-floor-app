@@ -14,12 +14,15 @@
 // → identyczna logika jak newGame() → kafelki zawsze pasują do canvasu.
 // ─────────────────────────────────────────────────────────────────────────────
 import { useCallback, useEffect, useRef } from 'react'
+import type { TileOwner } from '../types'
 import { getBoardDimensions, useConfigStore } from '../store/useConfigStore'
 import { getCatEmoji, useGameStore } from '../store/useGameStore'
 
-const PLAYERS = {
-  gold:   { color: '#1a1200', border: '#FFD700', glow: 'rgba(255,215,0,0.15)'    },
-  silver: { color: '#0e0e0e', border: '#C0C0C0', glow: 'rgba(192,192,192,0.10)' },
+const PLAYERS: Record<TileOwner, { color: string; border: string; glow: string }> = {
+  gold:    { color: '#1a1200', border: '#FFD700', glow: 'rgba(255,215,0,0.15)'    },
+  silver:  { color: '#0e0e0e', border: '#C0C0C0', glow: 'rgba(192,192,192,0.10)' },
+  // Unclaimed tiles (used by multiplayer; single-player tiles are always gold/silver).
+  neutral: { color: '#0c0c0c', border: '#555555', glow: 'rgba(255,255,255,0.04)' },
 }
 
 const emojiCache = new Map<string, HTMLCanvasElement>()
