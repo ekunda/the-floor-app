@@ -22,6 +22,10 @@ import {
   resolveRound, winnerAfterTimeout,
 } from '../domain/duel'
 import { pickNextQuestionId } from '../domain/questions'
+import { applyMatchResult, playerXpDelta, xpRewards } from '../domain/xp'
+import {
+  ensureProfileOnline, fetchMatchStats, recordGameHistory, saveMatchStats,
+} from '../lib/profileService'
 import { getBoardDimensions, useConfigStore } from './useConfigStore'
 import { useAuthStore } from './useAuthStore'
 
@@ -223,44 +227,22 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     forfeit = false,
   ) {
     try {
-      const xpWin  = forfeit ? Math.round(categoriesCount * 1.5) : categoriesCount
-      const xpLoss = forfeit ? -Math.floor(categoriesCount / 2) : 0
-      const xpDraw = Math.floor(categoriesCount / 2)
+      const rewards = xpRewards(categoriesCount, forfeit)
+      const stats   = await fetchMatchStats(hostId, guestId)
+      if (!stats) { console.warn('[MP] awardXP: profile missing'); return }
 
-      const [{ data: hp }, { data: gp }] = await Promise.all([
-        supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', hostId).maybeSingle(),
-        supabase.from('profiles').select('xp,wins,losses,win_streak,best_streak').eq('id', guestId).maybeSingle(),
-      ])
-      if (!hp || !gp) { console.warn('[MP] awardXP: profile missing'); return }
-
-      let hXp = hp.xp ?? 0, hW = hp.wins ?? 0, hL = hp.losses ?? 0, hStr = hp.win_streak ?? 0, hBest = hp.best_streak ?? 0
-      let gXp = gp.xp ?? 0, gW = gp.wins ?? 0, gL = gp.losses ?? 0, gStr = gp.win_streak ?? 0, gBest = gp.best_streak ?? 0
-
-      if (winnerRole === 'host') {
-        hXp += xpWin; hW++; hStr++; hBest = Math.max(hBest, hStr)
-        gXp = Math.max(0, gXp + xpLoss); gL++; gStr = 0
-      } else if (winnerRole === 'guest') {
-        gXp += xpWin; gW++; gStr++; gBest = Math.max(gBest, gStr)
-        hXp = Math.max(0, hXp + xpLoss); hL++; hStr = 0
-      } else {
-        hXp += xpDraw; gXp += xpDraw; hStr = 0; gStr = 0
-      }
-
-      await Promise.all([
-        supabase.from('profiles').update({ xp: hXp, wins: hW, losses: hL, win_streak: hStr, best_streak: hBest, updated_at: new Date().toISOString() }).eq('id', hostId),
-        supabase.from('profiles').update({ xp: gXp, wins: gW, losses: gL, win_streak: gStr, best_streak: gBest, updated_at: new Date().toISOString() }).eq('id', guestId),
-      ])
+      const next = applyMatchResult(stats.host, stats.guest, winnerRole, rewards)
+      await saveMatchStats(hostId, next.host, guestId, next.guest)
 
       if (winnerRole !== 'draw') {
-        const winnerId = winnerRole === 'host' ? hostId : guestId
-        const loserId  = winnerRole === 'host' ? guestId : hostId
+        const hostWon = winnerRole === 'host'
         const { hostScore, guestScore } = get()
-        await supabase.from('game_history').insert({
-          winner_id: winnerId, loser_id: loserId,
-          winner_score: winnerRole === 'host' ? hostScore : guestScore,
-          loser_score:  winnerRole === 'host' ? guestScore : hostScore,
-          is_draw: false,
-        }).select()
+        await recordGameHistory({
+          winnerId:    hostWon ? hostId : guestId,
+          loserId:     hostWon ? guestId : hostId,
+          winnerScore: hostWon ? hostScore : guestScore,
+          loserScore:  hostWon ? guestScore : hostScore,
+        })
       }
 
       useAuthStore.getState().refreshProfile()
@@ -271,14 +253,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
   async function ensureProfile(id: string, username: string, avatar: string) {
     const authUser = useAuthStore.getState().user
-    if (authUser && authUser.id === id) {
-      await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', id)
-      return
-    }
-    await supabase.from('profiles').upsert(
-      { id, username, avatar, xp: 0, wins: 0, losses: 0, win_streak: 0, best_streak: 0, status: 'online', last_seen: new Date().toISOString(), updated_at: new Date().toISOString() },
-      { onConflict: 'id', ignoreDuplicates: true }
-    )
+    await ensureProfileOnline(id, username, avatar, !!authUser && authUser.id === id)
   }
 
   // ── Timer (HOST only) ──────────────────────────────────────────────────────
@@ -391,11 +366,9 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     const guestId = opponentId ?? ''
 
     const cc = gameSettings.categoriesCount
-    const xpWin  = cc
-    const xpLoss = 0
-    const xpDraw = Math.floor(cc / 2)
-    const hostXpDelta  = winnerRole === 'host' ? xpWin : winnerRole === 'guest' ? xpLoss : xpDraw
-    const guestXpDelta = winnerRole === 'guest' ? xpWin : winnerRole === 'host' ? xpLoss : xpDraw
+    const rewards = xpRewards(cc)
+    const hostXpDelta  = playerXpDelta('host',  winnerRole, rewards)
+    const guestXpDelta = playerXpDelta('guest', winnerRole, rewards)
 
     stopTicker()
     clearCountdown()
@@ -573,7 +546,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         clearCountdown()
         get().showToast('🚪 Przeciwnik opuścił pokój')
         const { status: curStatus, opponentId, gameSettings: gsCur, role: curRole, tiles: curTiles } = get()
-        const forfeitXpWin = Math.round(gsCur.categoriesCount * 1.5)
+        const forfeitXpWin = xpRewards(gsCur.categoriesCount, true).win
         if (curStatus === 'playing' && curRole === 'guest' && opponentId) {
           awardXP(opponentId, effectivePlayerId(), 'guest', gsCur.categoriesCount, true).catch(() => {})
         }
