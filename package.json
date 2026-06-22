@@ -9,8 +9,11 @@
 		"preview": "vite preview",
 		"predeploy": "npm run build",
 		"deploy": "gh-pages -d dist",
+		"typecheck": "tsc -b",
+		"lint": "eslint .",
 		"test": "vitest run",
 		"test:watch": "vitest",
+		"verify": "tsc -b && vitest run",
 		"test:e2e": "playwright test",
 		"test:e2e:ui": "playwright test --ui"
 	},
