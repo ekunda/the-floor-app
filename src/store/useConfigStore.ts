@@ -18,6 +18,7 @@
 import { create } from 'zustand'
 import { SoundEngine } from '../lib/SoundEngine'
 import { getCachedStale, invalidateCache, setCached, supabase } from '../lib/supabase'
+import { parseNumericValue, parsePlayers, parseTileCategories } from '../domain/config'
 import { GameConfig, PlayerSettings } from '../types'
 
 export const DEFAULTS: GameConfig = {
@@ -115,44 +116,6 @@ interface ConfigStore {
 	resetAll: () => Promise<void>
 }
 
-// ── Bezpieczny parser wartości jsonb → number ─────────────────────────────────
-function parseNumericValue(value: unknown): number | null {
-	if (typeof value === 'number' && !isNaN(value)) return value
-	if (typeof value === 'string') {
-		const n = Number(value)
-		if (!isNaN(n)) return n
-	}
-	return null
-}
-
-// ── Bezpieczny parser wartości jsonb → string[] ───────────────────────────────
-function parseTileCategories(value: unknown): string[] {
-	if (Array.isArray(value)) return value.filter(v => typeof v === 'string')
-	if (typeof value === 'string') {
-		try {
-			const parsed = JSON.parse(value)
-			if (Array.isArray(parsed)) return parsed.filter((v: unknown) => typeof v === 'string')
-		} catch { /* ignore */ }
-	}
-	return []
-}
-
-// ── Parser ustawień graczy ────────────────────────────────────────────────────
-function parsePlayers(value: unknown): [PlayerSettings, PlayerSettings] | null {
-	try {
-		let arr: unknown
-		if (typeof value === 'string') arr = JSON.parse(value)
-		else arr = value
-		if (Array.isArray(arr) && arr.length >= 2 && typeof arr[0]?.name === 'string' && typeof arr[1]?.name === 'string') {
-			return [
-				{ name: arr[0].name, color: arr[0].color ?? DEFAULT_PLAYERS[0].color },
-				{ name: arr[1].name, color: arr[1].color ?? DEFAULT_PLAYERS[1].color },
-			]
-		}
-	} catch { /* ignore */ }
-	return null
-}
-
 export const useConfigStore = create<ConfigStore>((set, get) => ({
 	config: DEFAULTS,
 	players: DEFAULT_PLAYERS,
@@ -187,7 +150,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 					if (key === TILE_CATEGORIES_KEY) {
 						tileCats = parseTileCategories(value)
 					} else if (key === PLAYER_SETTINGS_KEY) {
-						const p = parsePlayers(value)
+						const p = parsePlayers(value, DEFAULT_PLAYERS)
 						if (p) {
 							players = p
 							playersFromSupabase = true
@@ -203,7 +166,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 					try {
 						const ls = localStorage.getItem(LS_PLAYERS_KEY)
 						if (ls) {
-							const p = parsePlayers(ls)
+							const p = parsePlayers(ls, DEFAULT_PLAYERS)
 							if (p) players = p
 						}
 					} catch { /* ignore */ }
@@ -220,7 +183,7 @@ export const useConfigStore = create<ConfigStore>((set, get) => ({
 			try {
 				const ls = localStorage.getItem(LS_PLAYERS_KEY)
 				if (ls) {
-					const p = parsePlayers(ls)
+					const p = parsePlayers(ls, DEFAULT_PLAYERS)
 					if (p) set({ players: p })
 				}
 			} catch { /* ignore */ }
