@@ -16,6 +16,8 @@ import {
   Category, MPActivePlayer, MPDuelState, MPEvent,
   MPGameState, MPRole, MPStatus, Question, SpeechLang, Tile, TileOwner,
 } from '../types'
+import { normalizeCategories } from '../domain/categories'
+import { fetchRawCategories } from '../lib/categoryService'
 import { evaluateBoardOutcome, shuffle } from '../domain/board'
 import {
   applyPassPenalty, nextPickerAfterRound, opponentOf, ownerForWinner,
@@ -639,16 +641,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
         return
       }
       try {
-        const { data } = await supabase
-          .from('categories')
-          .select('id,name,emoji,lang,created_at,questions(id,category_id,image_path,answer,synonyms,created_at)')
-          .order('created_at')
-        const cats = (data ?? []).map((c: Record<string, unknown>) => ({
-          ...c, lang: (c.lang as string) ?? 'pl-PL',
-          questions: (Array.isArray(c.questions) ? c.questions : []).map((q: Record<string, unknown>) => ({
-            ...q, synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
-          })),
-        })) as (Category & { questions: Question[] })[]
+        const cats = normalizeCategories(await fetchRawCategories() ?? [])
         _catsCache    = cats
         _catsCachedAt = Date.now()
         set({ categories: cats })
