@@ -17,6 +17,10 @@ import {
   MPGameState, MPRole, MPStatus, Question, SpeechLang, Tile, TileOwner,
 } from '../types'
 import { evaluateBoardOutcome, shuffle } from '../domain/board'
+import {
+  applyPassPenalty, nextPickerAfterRound, opponentOf, ownerForWinner,
+  resolveRound, winnerAfterTimeout,
+} from '../domain/duel'
 import { pickNextQuestionId } from '../domain/questions'
 import { getBoardDimensions, useConfigStore } from './useConfigStore'
 import { useAuthStore } from './useAuthStore'
@@ -315,24 +319,18 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
   // ── State transitions (HOST only) ─────────────────────────────────────────
 
   function onTimeout(duel: MPDuelState) {
-    const loser:  MPActivePlayer = duel.active
-    const winner: MPActivePlayer = loser === 'host' ? 'guest' : 'host'
+    const winner = winnerAfterTimeout(duel.active)
     get().showFeedback('⏰ Czas minął!', 'timeout')
     broadcast({ type: 'feedback', text: '⏰ Czas minął!', feedbackType: 'timeout' })
     setTimeout(() => hostEndRound(winner, duel), 1200)
   }
 
   function hostEndRound(winner: MPActivePlayer | 'draw', duel: MPDuelState) {
-    const { tiles } = get()
-    const owner: TileOwner = winner === 'host' ? 'gold' : winner === 'guest' ? 'silver' : tiles[duel.tileIdx]?.owner ?? 'neutral'
-    const newTiles = tiles.map((t, i) => i === duel.tileIdx ? { ...t, owner } : t)
-    const hs = newTiles.filter(t => t.owner === 'gold').length
-    const gs = newTiles.filter(t => t.owner === 'silver').length
-    // Alternate picker: winner of this round's opponent picks next
-    const nextPicker: MPActivePlayer = winner === 'host' ? 'guest' : winner === 'guest' ? 'host' : (get().currentPicker === 'host' ? 'guest' : 'host')
-    set({ tiles: newTiles, winner, hostScore: hs, guestScore: gs, currentPicker: nextPicker })
-    broadcast({ type: 'round_end', winner, tileIdx: duel.tileIdx, hostScore: hs, guestScore: gs })
-    writeDB({ tiles: newTiles, cursor: get().cursor, host_score: hs, guest_score: gs })
+    const { tiles, currentPicker } = get()
+    const r = resolveRound(tiles, duel.tileIdx, winner, currentPicker)
+    set({ tiles: r.tiles, winner, hostScore: r.hostScore, guestScore: r.guestScore, currentPicker: r.nextPicker })
+    broadcast({ type: 'round_end', winner, tileIdx: duel.tileIdx, hostScore: r.hostScore, guestScore: r.guestScore })
+    writeDB({ tiles: r.tiles, cursor: get().cursor, host_score: r.hostScore, guest_score: r.guestScore })
   }
 
   function hostAdvanceAfterCorrect(who: MPActivePlayer) {
@@ -347,7 +345,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     setTimeout(() => {
       const { duel } = get()
       if (!duel) return
-      const next: MPActivePlayer = who === 'host' ? 'guest' : 'host'
+      const next = opponentOf(who)
       const { questionId, usedIds } = pickNext(duel)
       const q = resolveQ(questionId)
       const updated = { ...duel, active: next, questionId, usedQuestionIds: usedIds, paused: false }
@@ -363,7 +361,7 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
     stopTicker()
     const ans = get().currentQuestion?.answer ?? '???'
     const key = who === 'host' ? 'timerHost' : 'timerGuest'
-    const pen = Math.max(0, duel[key] - get().gameSettings.passPenalty)
+    const pen = applyPassPenalty(duel[key], get().gameSettings.passPenalty)
     get().showFeedback(`⏱ PAS · ${ans}`, 'pass')
     broadcast({ type: 'pass', player: who, answer: ans })
 
@@ -517,12 +515,16 @@ export const useMultiplayerStore = create<MPStore>((set, get) => {
 
       case 'round_end': {
         if (role === 'guest') {
-          const { tiles } = get()
-          const owner: TileOwner = ev.winner === 'host' ? 'gold' : ev.winner === 'guest' ? 'silver' : tiles[ev.tileIdx]?.owner ?? 'neutral'
+          const { tiles, currentPicker } = get()
+          // Recolour the tile + advance the picker with the same rules the host
+          // used; scores are authoritative from the host, so take them verbatim.
+          const owner = ownerForWinner(ev.winner, tiles[ev.tileIdx]?.owner ?? 'neutral')
           const newTiles = ev.tileIdx >= 0 ? tiles.map((t, i) => i === ev.tileIdx ? { ...t, owner } : t) : tiles
-          // Alternate picker for guest
-          const np: MPActivePlayer = ev.winner === 'host' ? 'guest' : ev.winner === 'guest' ? 'host' : (get().currentPicker === 'host' ? 'guest' : 'host')
-          set({ tiles: newTiles, winner: ev.winner, hostScore: ev.hostScore, guestScore: ev.guestScore, currentPicker: np })
+          set({
+            tiles: newTiles, winner: ev.winner,
+            hostScore: ev.hostScore, guestScore: ev.guestScore,
+            currentPicker: nextPickerAfterRound(ev.winner, currentPicker),
+          })
         } else {
           const { duel } = get()
           if (duel) set({ duel: { ...duel, paused: true } })
