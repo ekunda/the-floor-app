@@ -1044,7 +1044,7 @@ function AdvancedSection({ confirmResetAll, setConfirmResetAll, handleResetAll, 
     try {
       // Wyczyść też localStorage cache nicków graczy (zostaną pobrane z Supabase)
       localStorage.removeItem('thefloor_players')
-    } catch {}
+    } catch { /* ignore */ }
     setConfirm(null)
     toast.success('Wyczyszczono lokalny stan gry (sesja)')
   }, { onError: e => toast.error(e.message) })

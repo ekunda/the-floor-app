@@ -129,5 +129,5 @@ export function hasGameState(): boolean {
 export function clearGameState(): void {
   try {
     sessionStorage.removeItem(STORAGE_KEY)
-  } catch {}
+  } catch { /* ignore */ }
 }

@@ -69,7 +69,7 @@ export const SoundEngine = {
   play(key: SoundKey, relVolume = 1): void {
     try {
       make(SOUNDS[key], sfxFinal(relVolume)).play().catch(() => {})
-    } catch {}
+    } catch { /* ignore */ }
   },
 
   // ── Muzyka tła ─────────────────────────────────────────────────────────────
@@ -79,7 +79,7 @@ export const SoundEngine = {
       _bgBaseVolume = relVolume
       _bgTrack      = make(SOUNDS[key], musicFinal(relVolume), true)
       _bgTrack.play().catch(() => {})
-    } catch {}
+    } catch { /* ignore */ }
   },
 
   stopBg(fadeMs = 400): void {
@@ -139,7 +139,7 @@ export const SoundEngine = {
         this._beep(ctx, gain, 880,  0,    0.18, vol * 0.8)
         this._beep(ctx, gain, 1320, 0.02, 0.16, vol * 0.6)
       }
-    } catch {}
+    } catch { /* ignore */ }
   },
 
   _beep(
@@ -169,7 +169,7 @@ export const SoundEngine = {
     try {
       const ctx = getAudioCtx()
       if (ctx.state === 'suspended') await ctx.resume()
-    } catch {}
+    } catch { /* ignore */ }
   },
 
   SOUNDS,
