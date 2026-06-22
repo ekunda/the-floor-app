@@ -30,6 +30,7 @@ interface Player {
   win_streak: number
   best_streak: number
   status: string
+  is_admin: boolean
   created_at: string
 }
 
@@ -39,7 +40,7 @@ interface EditState {
 }
 
 type SortKey = 'xp' | 'wins' | 'win_streak' | 'losses' | 'created_at'
-type ConfirmType = 'reset_stats' | 'reset_xp' | 'ban' | 'delete'
+type ConfirmType = 'reset_stats' | 'reset_xp' | 'ban' | 'delete' | 'grant_admin' | 'revoke_admin'
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const badge = (v: number, good: number, great: number) =>
@@ -206,6 +207,13 @@ export default function AdminPlayers() {
       if (error) throw new Error(error.message)
       setPlayers(prev => prev.filter(p => p.id !== playerId))
       toast.success(`Usunięto: ${username}`)
+    } else if (type === 'grant_admin' || type === 'revoke_admin') {
+      const makeAdmin = type === 'grant_admin'
+      // RPC set_player_admin: SECURITY DEFINER + blokada usunięcia ostatniego admina
+      const { error } = await supabase.rpc('set_player_admin', { target_id: playerId, make_admin: makeAdmin })
+      if (error) throw new Error(error.message)
+      setPlayers(prev => prev.map(p => p.id === playerId ? { ...p, is_admin: makeAdmin } : p))
+      toast.success(makeAdmin ? `Nadano admina: ${username}` : `Odebrano admina: ${username}`)
     }
     setConfirm(null)
   }, { onError: e => toast.error(e.message) })
@@ -262,10 +270,12 @@ export default function AdminPlayers() {
     sortKey === k ? <span style={{ marginLeft: 4, opacity: 0.7 }}>{sortAsc ? '↑' : '↓'}</span> : null
 
   const confirmMeta: Record<ConfirmType, { title: string; danger: boolean; label: string }> = {
-    reset_stats: { title: 'RESET STATYSTYK', danger: true,  label: 'RESETUJ' },
-    reset_xp:    { title: 'RESET XP',         danger: true,  label: 'RESETUJ' },
-    ban:         { title: 'BLOKADA GRACZA',   danger: true,  label: 'ZABLOKUJ' },
-    delete:      { title: 'USUŃ GRACZA',      danger: true,  label: 'USUŃ' },
+    reset_stats:  { title: 'RESET STATYSTYK',  danger: true,  label: 'RESETUJ' },
+    reset_xp:     { title: 'RESET XP',          danger: true,  label: 'RESETUJ' },
+    ban:          { title: 'BLOKADA GRACZA',    danger: true,  label: 'ZABLOKUJ' },
+    delete:       { title: 'USUŃ GRACZA',       danger: true,  label: 'USUŃ' },
+    grant_admin:  { title: 'NADAJ ADMINA',      danger: false, label: 'NADAJ' },
+    revoke_admin: { title: 'ODBIERZ ADMINA',    danger: true,  label: 'ODBIERZ' },
   }
 
   return (
@@ -421,8 +431,15 @@ export default function AdminPlayers() {
                         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                           <Avatar p={p} />
                           <div>
-                            <div style={{ fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 2, color: T.text }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontFamily: "'Bebas Neue',sans-serif", letterSpacing: 2, color: T.text }}>
                               {p.username}
+                              {p.is_admin && (
+                                <span title="Administrator" style={{
+                                  fontSize: '0.62rem', letterSpacing: 1, padding: '1px 6px',
+                                  borderRadius: 20, background: 'rgba(212,175,55,0.15)',
+                                  border: `1px solid ${T.gold}66`, color: T.gold,
+                                }}>👑 ADMIN</span>
+                              )}
                             </div>
                             <div style={{ fontSize: '0.65rem', color: T.textDim2 }}>LVL {level}</div>
                           </div>
@@ -457,6 +474,9 @@ export default function AdminPlayers() {
                             variant="secondary" size="sm"
                             style={{ color: '#fb923c' }}
                           >+100 XP</AdminButton>
+                          {p.is_admin
+                            ? <AdminButton onClick={() => openConfirm('revoke_admin', p)} variant="ghost" size="sm" style={{ color: T.gold }}>👑 Odbierz</AdminButton>
+                            : <AdminButton onClick={() => openConfirm('grant_admin', p)} variant="ghost" size="sm" style={{ color: T.gold }}>👑 Admin</AdminButton>}
                           <AdminButton onClick={() => openConfirm('reset_stats', p)} variant="danger" size="sm">🔄 Reset</AdminButton>
                           <AdminButton onClick={() => openConfirm('delete', p)} variant="danger" size="sm">🗑️</AdminButton>
                         </div>

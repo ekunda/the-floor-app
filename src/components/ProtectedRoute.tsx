@@ -7,10 +7,23 @@ export default function ProtectedRoute({ children }: { children: React.ReactNode
 	const [auth, setAuth] = useState(false)
 
 	useEffect(() => {
-		supabase.auth.getSession().then(({ data }) => {
-			setAuth(!!data.session)
-			setLoading(false)
-		})
+		let cancelled = false
+		;(async () => {
+			const { data } = await supabase.auth.getSession()
+			const uid = data.session?.user?.id
+			if (!uid) {
+				if (!cancelled) { setAuth(false); setLoading(false) }
+				return
+			}
+			// Sesja to za mało — panel wymaga realnych praw administratora (profiles.is_admin)
+			const { data: prof } = await supabase
+				.from('profiles').select('is_admin').eq('id', uid).maybeSingle()
+			if (!cancelled) {
+				setAuth(!!prof?.is_admin)
+				setLoading(false)
+			}
+		})()
+		return () => { cancelled = true }
 	}, [])
 
 	if (loading)

@@ -55,6 +55,15 @@ export default function Admin() {
         .eq('id', data.user.id)
     }
 
+    // Weryfikacja uprawnień: konto musi mieć profiles.is_admin = true.
+    // Bez tego ProtectedRoute i tak odbije z /admin/config → pętla przekierowań.
+    const { data: prof } = await supabase
+      .from('profiles').select('is_admin').eq('id', data.user.id).maybeSingle()
+    if (!prof?.is_admin) {
+      await supabase.auth.signOut()
+      throw new Error('To konto nie ma uprawnień administratora.')
+    }
+
     recordLogin()
     navigate('/admin/config')
   }, { onError: e => toast.error(e.message) })
