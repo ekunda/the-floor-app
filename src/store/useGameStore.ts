@@ -8,9 +8,11 @@
 //   - restoreSession() przywraca passCount
 // ─────────────────────────────────────────────────────────────────────────────
 import { create } from 'zustand'
-import { getCachedStale, setCached, supabase } from '../lib/supabase'
+import { getCachedStale, setCached } from '../lib/supabase'
 import { clearGameState, loadGameState, saveGameState } from '../lib/persistence'
+import { fetchRawCategories } from '../lib/categoryService'
 import { Category, DuelState, Question, Tile, TileOwner } from '../types'
+import { normalizeCategories } from '../domain/categories'
 import { computeStats, shuffle } from '../domain/board'
 import { pickNextQuestionId } from '../domain/questions'
 import { CATEGORY_EMOJI, getCatEmoji } from '../domain/emoji'
@@ -19,19 +21,6 @@ import { getBoardDimensions, useConfigStore } from './useConfigStore'
 // Re-exported for existing consumers (Board.tsx, Game.tsx) — the canonical
 // definitions now live in src/domain.
 export { CATEGORY_EMOJI, getCatEmoji, computeStats }
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalizeQuestions(cats: any[]): (Category & { questions: Question[] })[] {
-  return cats.map(cat => ({
-    ...cat,
-    lang: cat.lang ?? 'pl-PL',
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    questions: (cat.questions ?? []).map((q: any) => ({
-      ...q,
-      synonyms: Array.isArray(q.synonyms) ? q.synonyms : [],
-    })),
-  }))
-}
 
 interface GameStore {
   categories: (Category & { questions: Question[] })[]
@@ -87,12 +76,6 @@ function resetPassLocks() {
 const CACHE_KEY_CATS = 'categories_all'
 const CACHE_TTL_CATS = 10 * 60 * 1000
 
-const queryCats = () =>
-  supabase
-    .from('categories')
-    .select('id, name, emoji, lang, created_at, questions(id, category_id, image_path, answer, synonyms, created_at)')
-    .order('created_at')
-
 export const useGameStore = create<GameStore>((set, get) => ({
   categories: [],
   tiles:      [],
@@ -110,16 +93,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
     // Stale-while-revalidate: use cached data immediately, revalidate in background
     const cached = getCachedStale<unknown[]>(CACHE_KEY_CATS, CACHE_TTL_CATS)
     if (cached) {
-      const full = normalizeQuestions(cached.data)
+      const full = normalizeCategories(cached.data)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
       if (needsNewGame()) get().newGame()
       // If cache is fresh, skip network fetch entirely
       if (cached.fresh) return
     }
-    const { data: cats } = await queryCats()
+    const cats = await fetchRawCategories()
     if (cats) {
       setCached(CACHE_KEY_CATS, cats)
-      const full = normalizeQuestions(cats)
+      const full = normalizeCategories(cats)
       set({ categories: full, showStats: useConfigStore.getState().config.SHOW_STATS === 1 })
       if (needsNewGame()) get().newGame()
     }
@@ -128,8 +111,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
   restoreSession: async () => {
     const saved = loadGameState()
     if (!saved) return false
-    const [{ data: cats }] = await Promise.all([queryCats(), useConfigStore.getState().fetch()])
-    const categories = normalizeQuestions(cats ?? [])
+    const [cats] = await Promise.all([fetchRawCategories(), useConfigStore.getState().fetch()])
+    const categories = normalizeCategories(cats ?? [])
     if (cats) setCached(CACHE_KEY_CATS, cats)
 
     // ── Guard: preset could have changed in admin between sessions ────────────
