@@ -4,6 +4,7 @@ import { useAuthStore, AVATAR_OPTIONS } from '../store/useAuthStore'
 import { supabase } from '../lib/supabase'
 
 interface RecentGame { id: string; opponent: string; result: 'win'|'loss'|'draw'; host_score: number; guest_score: number; played_at: string }
+interface GameHistoryRow { id: string; winner_id: string; loser_id: string; winner_score: number; loser_score: number; is_draw: boolean; played_at: string }
 
 export default function UserProfile() {
   const navigate = useNavigate()
@@ -30,7 +31,7 @@ export default function UserProfile() {
       .order('played_at', { ascending: false })
       .limit(10)
     if (data) {
-      const rows: RecentGame[] = data.map((g: any) => ({
+      const rows: RecentGame[] = (data as GameHistoryRow[]).map(g => ({
         id: g.id,
         opponent: '???',
         result: g.is_draw ? 'draw' : g.winner_id === user!.id ? 'win' : 'loss',

@@ -3,6 +3,7 @@
  * Supports both registered (email/password) and anonymous players
  */
 import { create } from 'zustand'
+import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 
 export interface UserProfile {
@@ -23,7 +24,7 @@ export interface UserProfile {
 
 interface AuthStore {
   user: UserProfile | null
-  session: any | null
+  session: Session | null
   loading: boolean
   error: string | null
 
@@ -67,7 +68,7 @@ async function loadProfile(userId: string): Promise<UserProfile | null> {
 
 async function upsertProfile(profile: Partial<UserProfile> & { id: string }): Promise<void> {
   // Strip fields that don't exist in the profiles table (e.g. email)
-  const { email: _email, ...profileData } = profile as any
+  const { email: _email, ...profileData } = profile
   const { error } = await supabase.from('profiles').upsert(profileData, { ignoreDuplicates: false })
   if (error) console.warn('[Auth] upsertProfile error:', error)
 }
@@ -208,8 +209,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       // Profile will be created in onAuthStateChange SIGNED_IN handler.
 
       return true
-    } catch (e: any) {
-      set({ error: e.message ?? 'Nieznany błąd' })
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : 'Nieznany błąd' })
       return false
     }
   },
@@ -230,8 +231,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       await supabase.from('profiles').update({ status: 'online', last_seen: new Date().toISOString() }).eq('id', profile.id)
       set({ user: { ...profile, status: 'online' } })
       return true
-    } catch (e: any) {
-      set({ error: e.message ?? 'Nieznany błąd' })
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : 'Nieznany błąd' })
       return false
     }
   },
@@ -302,8 +303,8 @@ export const useAuthStore = create<AuthStore>((set, get) => ({
       await supabase.from('profiles').update({ avatar_url: publicUrl, updated_at: new Date().toISOString() }).eq('id', user.id)
       set({ user: { ...user, avatar_url: publicUrl } })
       return true
-    } catch (e: any) {
-      set({ error: e.message }); return false
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : 'Błąd' }); return false
     }
   },
 

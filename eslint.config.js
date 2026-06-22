@@ -27,6 +27,13 @@ export default defineConfig([
         varsIgnorePattern: '^_',
         caughtErrorsIgnorePattern: '^_',
       }],
+      // React-Compiler readiness rules (eslint-plugin-react-hooks v6). This app
+      // does not use React Compiler, and the realtime duel timing intentionally
+      // reads/writes refs during render. Keep these visible as warnings rather
+      // than blocking the build — revisit if/when adopting React Compiler.
+      'react-hooks/refs': 'warn',
+      'react-hooks/purity': 'warn',
+      'react-hooks/immutability': 'warn',
     },
   },
 ])

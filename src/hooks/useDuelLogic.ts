@@ -138,7 +138,6 @@ export function useDuelLogic(): DuelLogicResult {
     if (prev !== null && activeTimer < prev && activeTimer >= 1 && activeTimer <= 3) {
       SoundEngine.timerBeep(activeTimer as 1 | 2 | 3, 1)
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel?.timer1, duel?.timer2, duel?.active, duel?.started, duel?.paused, countdown])
 
   // ── Image URL ─────────────────────────────────────────────────────────────
@@ -160,7 +159,6 @@ export function useDuelLogic(): DuelLogicResult {
     return () => {
       if (intervalIdRef.current) { clearInterval(intervalIdRef.current); intervalIdRef.current = null }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel?.started, duel?.paused])
 
   // ── Koniec timera → winner ────────────────────────────────────────────────
@@ -201,7 +199,6 @@ export function useDuelLogic(): DuelLogicResult {
       lastPassFiredTs.current     = 0
       prevActiveTimerRef.current  = null
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [duel])
 
   // ── Helpers ───────────────────────────────────────────────────────────────
